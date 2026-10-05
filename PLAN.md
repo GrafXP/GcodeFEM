@@ -218,13 +218,16 @@ Print temperatures are the only temperature input; service temperature is out of
 - Later: a cooling + reptation/healing model that turns the interface temperature at
   deposition into bond strength.
 
-### Size and cost
-A cell holds about 0.032 mm³, so **~25k cells per gram of PLA**, plus 20–30 % for
-face-connected diagonals. Storing them is cheap: 4 bytes per cell, so 50 g is about 6 MB.
+### Size and cost (measured in M2)
+The printed 20 mm cube (3.7 g of PLA, X1C, 0.20 Standard) gives:
+- 116,744 active cells (**≈ 32k cells per gram**)
+- 159,274 nodes and 477,822 DOF (**≈ 130k DOF per gram**, about 4 DOF per cell)
 
-Solving every cell at once is what's expensive: about 150k DOF per gram, which tops out
-around 15 g on 8 GB. The octree solve (§7.2) only goes down to bead resolution where
-stress is high, so the cost follows the size of the hotspots, not the size of the part.
+Storing cells is cheap: about 4 bytes each. Solving every cell at once is what's
+expensive: about 3 KB of RAM per DOF at the peak, so full bead resolution stops around
+**1.5 M DOF ≈ 11–12 g of PLA** on this 8 GB laptop, at about a minute per solve.
+The octree solve (§7.2) only goes down to bead resolution where stress is high, so the
+cost follows the size of the hotspots, not the size of the part.
 
 ---
 
@@ -245,16 +248,30 @@ offers: per-cell rotated orthotropic material from toolpaths.
 
 **AMGCL's stock C API** (`lib/amgcl.h`) cannot pass rigid-body modes or block size, and
 those are where the 20× comes from. So `native/AmgclBridge` is our own ~150-line C++ DLL:
-- **In:** CSR matrix, node coordinates, right-hand side, tolerance.
-- **Inside:** builds `rigid_body_modes` from the coordinates and solves with CG +
-  smoothed aggregation (`as_scalar`, float preconditioner).
+- **In:** CSR matrix, node coordinates, right-hand side, tolerance, smoother choice.
+- **Inside:** builds `rigid_body_modes` from the coordinates and solves with CG on 3×3
+  double blocks, preconditioned by smoothed aggregation (`as_scalar`) on 3×3 float blocks.
 - **Out:** displacements and iteration info.
-- Builds once with CMake + MSVC. AMGCL's headers are vendored.
+- Built by `native\build.cmd` (CMake + MSVC, `/openmp`) into `native\bin`, which is not
+  in git. The vendored AMGCL 1.5.0 headers live in `native\third_party`.
+
+**Measured on this laptop (M2):**
+
+| Test | Result |
+| --- | --- |
+| Smoothers on the printed cube (478k DOF) | **ILU(0): 31 iterations, setup 5.6 s, solve 7.3 s** (default). Chebyshev: 146 iterations, 58 s. SPAI-0: 453 iterations, 79 s. Thin infill walls need the strong smoother. |
+| OpenMP | 4 cores give 3.5× over one thread |
+| Solid cantilevers, `gcodefem bench` | 23k / 170k / 555k / 1.29M DOF → 0.8 / 4.2 / 18 / 48 s total, iterations flat at about 24, peak RAM 0.1 / 0.7 / 2.2 / 3.9 GB. **AMG setup is the largest single cost.** |
+| C# Jacobi-PCG | 1,054 iterations and 91 s at 170k DOF, about 45× slower than AMGCL. Only a fallback. |
+| Accuracy | tip deflection 1.5–2.5 % stiffer than Timoshenko (8-node hex with a fully clamped root). The patch test is exact to 7 digits. |
 
 **C# side (Core/Fem):**
 - **Element stiffness:** H8 element stiffness for rotated orthotropic material, cached per
   (layer height × 5° angle bin × feature class), then scaled by φ per cell.
-- **Assembly and BCs:** parallel CSR assembly. Fixed DOFs are eliminated.
+- **Assembly and BCs:** parallel CSR assembly. Cells are processed in 8 parity colours
+  that share no nodes, so it needs no locks. Each node has a 27-bit neighbour mask, which
+  gives sorted columns and popcount slots. Fixed DOFs become identity rows and columns, so
+  the 3×3 block structure survives for AMG.
 - **Connectivity:** flood fill from the fixtures drops cells that aren't connected to the
   part. Stray islands would make the matrix singular.
 - **Results:** stress recovery at element centres, then the failure criteria (§8).
@@ -464,7 +481,7 @@ that comes early.
 | --- | --- | --- |
 | M0 | **Scaffold**: slnx, Core / App / Cli / Tests, Helix viewport shows an STL. Install the C++ build tools. | `dotnet build` + `dotnet test` green, window shows `samples/cube20.stl` |
 | M1 | **Slice & parse**: read the current Bambu selection, filament list, CLI runner with timeout and log capture, rotated-STL writer, `result.json` → placement, G-code parser incl. per-segment deposition time | `gcodefem slice model.stl --rot 0,90,0 --filament "eSun PLA+"` prints layer and feature stats; parser tests run on the cube fixture. **Done 2026-10-05.** |
-| M2 | **Solver core**: block-sparse bead-cell voxelizer (φ only, isotropic), H8 assembly, C# PCG + AmgclBridge DLL, uniform bead-resolution solve | cantilever within a few % of beam theory; DOF vs time vs memory measured; this solve becomes the **reference** for M3 |
+| M2 | **Solver core**: block-sparse bead-cell voxelizer (φ only, isotropic), H8 assembly, C# PCG + AmgclBridge DLL, uniform bead-resolution solve | cantilever within a few % of beam theory; DOF vs time vs memory measured; this solve becomes the **reference** for M3. **Done 2026-10-05:** cantilever 1.5–2.5 % of Timoshenko, measurements in §6 and §7.1. |
 | M3 | **Octree adaptivity**: forest of root blocks, Galerkin coarsening, 2:1 balance, hanging-node constraints, downscaling, mark/refine/re-solve loop, RAM-based L suggestion | adaptive min SF (isotropic von Mises for now) within 5 % of the M2 reference using a fraction of its DOF; time per pass and coarse-level bias measured; defaults for L and k chosen |
 | M4 | **Viewer**: model, toolpaths with layer slider, cells, octree overlay, result colouring | cube toolpaths coloured by feature; cantilever result and refinement shown |
 | M5 | **Interfaces & loads editor**: picking, region growing, glyphs, load cases, project save/load | define a bracket's bolt holes + force in the UI and solve |
@@ -491,7 +508,12 @@ that comes early.
 - **Face-connected rasterisation of diagonal lines** adds a little extra material and
   stiffness. φ-scaling and 0°/45° coupons correct it.
 - **Native dependency:** the AMGCL bridge needs MSVC to build. The C# fallback keeps
-  everything working without it, just slower.
+  everything working without it, but it is about 45× slower (M2). In practice it only
+  handles tests and small parts.
+- **AMG setup dominates solve time** (25 s of 48 s at 1.3 M DOF). The octree passes in M3
+  change the matrix every time, so the setup can't be reused across passes. To keep them
+  cheap: a looser tolerance (1e-6) for intermediate passes, and the full 1e-8 only on the
+  final one.
 - The Bambu CLI is undocumented and can change between versions. The wrapper isolates it,
   logs the version and always checks `result.json` `return_code`.
 - HelixToolkit SharpDX sits on the archived SharpDX library. It works on .NET 10, but it is

@@ -1,9 +1,15 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
+
+  <!-- Built by native\build.cmd; without it LinearSolvers.Best() falls back to the C# PCG. -->
+  <ItemGroup Condition="Exists('..\..\native\bin\AmgclBridge.dll')">
+    <None Include="..\..\native\bin\AmgclBridge.dll" Link="AmgclBridge.dll" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 
 </Project>

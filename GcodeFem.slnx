@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/GcodeFem.App/GcodeFem.App.csproj" />
+    <Project Path="src/GcodeFem.Cli/GcodeFem.Cli.csproj" />
+    <Project Path="src/GcodeFem.Core/GcodeFem.Core.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/GcodeFem.Tests/GcodeFem.Tests.csproj" />
+  </Folder>
+</Solution>

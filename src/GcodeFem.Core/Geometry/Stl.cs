@@ -71,7 +71,9 @@ public static class Stl
         return welder.ToMesh();
     }
 
-    public static void WriteBinary(TriangleMesh mesh, string path)
+    public static void WriteBinary(TriangleMesh mesh, string path) => File.WriteAllBytes(path, ToBinary(mesh));
+
+    public static byte[] ToBinary(TriangleMesh mesh)
     {
         var data = new byte[HeaderSize + 4 + TriangleRecordSize * mesh.TriangleCount];
         Encoding.ASCII.GetBytes("GcodeFem binary STL").CopyTo(data, 0);
@@ -87,7 +89,7 @@ public static class Stl
             WriteVector(record[24..], b);
             WriteVector(record[36..], c);
         }
-        File.WriteAllBytes(path, data);
+        return data;
 
         static void WriteVector(Span<byte> s, Vector3 v)
         {

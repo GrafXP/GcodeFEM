@@ -4,11 +4,11 @@ Read [PLAN.md](PLAN.md) for the design. This file only tracks where things stand
 
 ## 2026-10-05 — session 1
 - Project created, plan written.
-- **Slicer risk retired**: Bambu Studio 2.08.02.61 slices headless from system preset
-  paths in ~4 s (exact command in PLAN.md §2). Fixtures in `samples/`:
+- **Slicer risk retired**: Bambu Studio 2.08.02.61 slices headless. It needs flattened
+  presets; see PLAN.md §2 and M1 below. Fixtures in `samples/`:
   - `cube20.stl`: 20 mm cube
-  - `cube20_A1M_PLA.gcode`: the cube sliced on A1 mini / PLA Basic / 0.20mm Standard
-  - `cube20_A1M_PLA.result.json`: the slicer's summary
+  - `cube20_X1C_PLA.gcode`: the cube sliced on X1C / PLA Basic / 0.20mm Standard
+  - `cube20_X1C_PLA.result.json`: the slicer's summary
 - Stack confirmed by Martin: C# / .NET 10 / WPF / HelixToolkit.Wpf.SharpDX.
 - Martin's answers are recorded in PLAN.md §15:
   - interfaces = mount and contact faces
@@ -43,6 +43,45 @@ Read [PLAN.md](PLAN.md) for the design. This file only tracks where things stand
     `HelixToolkit.SharpDX`, collections are `HelixToolkit`, and the WPF elements are
     `HelixToolkit.Wpf.SharpDX`.
 
+### M1 slice & parse: done
+- Martin logged into Bambu Studio mid-session. The selection switched to **X1 Carbon 0.4**,
+  and 27 filament + 34 process user presets synced.
+- **The first spike was wrong.** The CLI ignores `inherits`/`include` and used defaults for
+  most settings (200 °C instead of 220 °C, and more). The A1M fixture was sliced that way,
+  so it was replaced.
+- `Core/Slicing`:
+  - `BambuInstallation`: exe, profiles, version; `GCODEFEM_BAMBU_DIR` overrides the path.
+  - `BambuSelection`: the current pick from `BambuStudio.conf`.
+  - `PresetLibrary`: system + user presets; `Resolve` flattens parent chain → includes →
+    own keys; `CompatibleWith` lists presets for a machine.
+  - `BambuSlicer`: writes the rotated STL + flattened JSONs, runs the CLI with a timeout,
+    tails the log on failure, caches by hash in `%LOCALAPPDATA%\GcodeFem\cache\slices`.
+  - `SlicerReport`: reads `result.json`.
+  - `Placement`: part ↔ print ↔ bed. It rejects a slicer that changed the bbox size.
+- `Core/Gcode`:
+  - `GcodeParser` handles G0–G3 (arcs split into chords), G4, G90/91, G92, M82/83,
+    M104/109, M106/107 (part fan only), and adds `extruder_offset` back.
+  - `Toolpath` / `ExtrusionSegment` / `ToolpathLayer` carry width, height, volume, time,
+    layer, feature, nozzle temperature and fan per segment.
+  - `ToolpathStatistics`: per-feature totals and per-part value ranges.
+- `Core/Geometry`: `Orientation.FromEulerDegrees` (X → Y → Z, exact quarter turns),
+  `MeshFactory.Box`, `Stl.ToBinary`.
+- CLI:
+  - `gcodefem presets [--all]`
+  - `gcodefem slice <stl> [--rot x,y,z] [--filament] [--process] [--machine] [--no-cache]`
+  - `gcodefem parse <gcode>`
+  - Output is ASCII on purpose: PowerShell 5.1 garbles UTF-8.
+- Verified:
+  - Bead centrelines sit 0.210 mm inside the model on all sides, rotated or not.
+  - Part filament is 1206.45 mm, equal to the header total minus the start purge.
+  - User presets (eSun PLA+ / 0.20mm Ultra Engineering) slice with their own settings.
+- Tests: 27 green, including 4 Bambu integration tests that skip without Bambu Studio.
+- Gotcha: don't round-trip UTF-8 sources through PowerShell 5.1 `Get-Content`/`Set-Content`.
+  It reads them as ANSI, and doing so garbled `°` in Program.cs once.
+
 ## Next
-- M1 slice & parse, M2 solver core (uniform bead-resolution reference), then M3 octree
-  adaptivity measured against that reference (PLAN.md §13).
+- M2 solver core: block-sparse bead-cell voxelizer (φ only, isotropic), H8 assembly, C#
+  PCG + AmgclBridge DLL, cantilever check, DOF/time/memory measured (PLAN.md §13).
+- Open item for M7: our feed-rate segment times ignore acceleration (≈2× short on solid
+  infill). Scale per feature using `result.json` `feature_type_times` when the bond model
+  needs layer times.

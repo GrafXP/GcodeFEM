@@ -33,31 +33,50 @@ Studio, linear solve through AMGCL.
 | Fact | Value |
 | --- | --- |
 | Bambu Studio | 2.08.02.61, `C:\Program Files\Bambu Studio\bambu-studio.exe` |
-| Active setup | A1 mini 0.4 nozzle · Bambu PLA Basic · 0.20mm Standard @BBL A1M |
+| Active setup | X1 Carbon 0.4 nozzle · Bambu PLA Basic @BBL X1C · 0.20mm Standard @BBL X1C (read live from `BambuStudio.conf`). The account also has A1 and A1 mini presets. |
+| Account presets | Bambu login syncs them to `%APPDATA%\BambuStudio\user\<app.preset_folder>\{filament,process}`: 27 filaments (mostly eSun, Sunlu, Purefil, addNorth, Prusament, greentec) and 34 processes, all inheriting from system presets |
 | .NET SDK | 10.0.201 (newest GA; .NET 11 ships Nov 2026) |
 | C++ toolchain | VS Build Tools 2026 (18.10.2) at `C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools`: MSVC 19.51, CMake 4.3.1 (bundled), OpenMP 2.0 (`/openmp`; `/openmp:llvm` if AMGCL needs newer). C# → native OpenMP DLL via P/Invoke verified, 8 threads. |
 | Hardware | i5-8350U 4 cores · 8 GB RAM · Intel UHD 620 (DX11 OK) |
 
-**Headless slicing works** with system preset paths passed directly. The CLI resolves the
-`inherits` chain itself. A 20 mm cube slices in 4 s with exit code 0:
+**Headless slicing works, but only with flattened presets** (about 1.4 s for a 20 mm cube):
 
 ```
-set BBL=C:\Program Files\Bambu Studio\resources\profiles\BBL
 bambu-studio.exe --debug 2 --arrange 1 ^
-  --load-settings "%BBL%\machine\Bambu Lab A1 mini 0.4 nozzle.json;%BBL%\process\0.20mm Standard @BBL A1M.json" ^
-  --load-filaments "%BBL%\filament\Bambu PLA Basic @BBL A1M.json" ^
-  --slice 0 --outputdir <dir> --export-3mf out.gcode.3mf model.stl
+  --load-settings "<dir>\machine.json;<dir>\process.json" ^
+  --load-filaments "<dir>\filament.json" ^
+  --slice 0 --outputdir <dir> --export-3mf plate.gcode.3mf <dir>\model.stl
 ```
 
-Outputs: `out.gcode.3mf`, `plate_1.gcode`, `result.json`. The `result.json` holds the
-`return_code`, the placed object's bbox, per-feature print times and the totals.
-Fixtures from this run are in [samples/](samples/).
+Outputs: `plate.gcode.3mf`, `plate_1.gcode`, `result.json`. The `result.json` holds the
+`return_code`, the placed object's bbox, per-feature print times and the filament grams.
+`BambuSlicer` (Core/Slicing) does all of this. The fixture
+[samples/cube20_X1C_PLA.gcode](samples/cube20_X1C_PLA.gcode) comes from it.
 
-Gotchas:
+Gotchas, all handled in code:
+- **The CLI does not resolve `inherits` or `include`.** Passing a system preset path
+  silently falls back to built-in defaults for every inherited key. The first spike used
+  200 °C, 2 mm³/s, 20 % cubic infill and 0.40 mm lines instead of PLA Basic's 220 °C,
+  21 mm³/s, 15 % grid and 0.42 mm.
+  - `PresetLibrary.Resolve` flattens each preset: the parent chain, then the `include`
+    templates (machine start/end/layer-change G-code live in separate "template"
+    presets), then the preset's own keys.
+  - User presets inherit from system presets and resolve the same way.
+- **`extruder_offset`** (X1C: `0x2`) shifts every G-code Y by −2 mm relative to the bed.
+  The parser adds it back, so segments are in true bed coordinates. Checked: bead
+  centrelines sit exactly 0.210 mm (half a line width) inside the model on all four sides.
 - The exe is a GUI-subsystem binary, so `--help` prints nothing. Diagnose through the exit
   code, `result.json` and `%APPDATA%\BambuStudio\log`.
-- `--arrange 1` placed the 20 mm cube at bed (80, 80, 0). The bed→part translation comes
-  from that bbox.
+- `--arrange 1` only translates: a 30×10×5 box kept its orientation, centred on the bed.
+  `Placement.FromSlice` rejects any change in bbox size.
+- `BambuStudio.conf` is JSON followed by an `# MD5 checksum` line. The selection is in
+  `presets.machine/process/filaments[0]` and the account folder in `app.preset_folder`.
+- The header's "total filament length" includes the start G-code purge line. For the cube,
+  1316.16 mm = 109.71 mm purge + 1206.45 mm part, which the parser matches exactly.
+- Our feed-rate times are close to the slicer's for walls and sparse infill, but about 2×
+  short for short-segment features (solid infill, bottom surface) because acceleration is
+  ignored. To revisit for the bond model (M7): scale per feature with the slicer's own
+  `feature_type_times`.
 
 **What the G-code gives us**:
 
@@ -66,15 +85,17 @@ Gotchas:
 | `; CHANGE_LAYER`, `; Z_HEIGHT:`, `; LAYER_HEIGHT:` | layer index and thickness → cell Z boundaries |
 | `; FEATURE: <type>` (emitted only on change) | line type per segment |
 | `; LINE_WIDTH:` | bead width per segment |
-| `M104` / `M109 S<t>` | nozzle temperature |
-| `M106 S<0–255>` | part-cooling fan |
+| `M104` / `M109 S<t>` | nozzle temperature (first layer often hotter, e.g. eSun PLA+ 240 → 230 °C) |
+| `M106 S<0–255>` (no P, or P1) | part-cooling fan. `P2` is the aux fan and `P3` the chamber fan, both ignored. |
 | `G1 X Y E F` with `M83` (relative E) | geometry, deposited volume, speed → deposition time |
-| settings block at file end | `line_width`, `layer_height`, `filament_type`, `filament_settings_id`, `sparse_infill_pattern`, `sparse_infill_density`, `wall_loops`, … |
+| `G2/G3 … I J [P]` | arcs. Bambu uses them for spiral z-hop travel; extruding arcs are split into chords. |
+| `; MACHINE_START_GCODE_END` / `; MACHINE_END_GCODE_START` | only lines between the first `CHANGE_LAYER` and the end G-code are recorded |
+| config block at the file **start** | `line_width`, `layer_height`, `extruder_offset`, `filament_type`, `filament_settings_id`, `sparse_infill_pattern`, `sparse_infill_density`, `wall_loops`, … |
 
 Feature types seen so far: Outer wall, Inner wall, Sparse infill, Internal solid infill,
-Top surface, Bottom surface, Bridge, Floating vertical shell, Skirt, Custom. Expect also
-Support, Support interface, Overhang wall, Gap infill. The parser must accept unknown
-types.
+Top surface, Bottom surface, Bridge, Floating vertical shell, Skirt, Custom. Also mapped:
+Overhang wall, Gap infill, Internal bridge, Ironing, Brim, Support, Support interface,
+Support transition, Prime tower. Unknown types are reported and kept out of the part.
 
 ---
 
@@ -351,9 +372,10 @@ weakest-spot marker and a colouring by governing mode.
 
 ## 9. Printer, process, filament, material data
 
-- **Printer + process are fixed** to whatever Bambu Studio has selected: read
-  `%APPDATA%\BambuStudio\BambuStudio.conf`, default A1 mini 0.4 / 0.20mm Standard. Bambu
-  printers behave alike, so they can be changed in settings but are not part of the loop.
+- **Printer + process are fixed** to whatever Bambu Studio has selected, read from
+  `%APPDATA%\BambuStudio\BambuStudio.conf` (currently X1 Carbon 0.4 / 0.20mm Standard
+  @BBL X1C). Bambu printers behave alike, so they can be changed in settings but are not
+  part of the loop.
 - **The user picks the filament.** The list is Bambu's system filament presets compatible
   with the printer, plus user presets from
   `%APPDATA%\BambuStudio\user\<id>\filament\`. The preset drives the slice, and with it the
@@ -441,7 +463,7 @@ that comes early.
 | # | Milestone | Done when |
 | --- | --- | --- |
 | M0 | **Scaffold**: slnx, Core / App / Cli / Tests, Helix viewport shows an STL. Install the C++ build tools. | `dotnet build` + `dotnet test` green, window shows `samples/cube20.stl` |
-| M1 | **Slice & parse**: read the current Bambu selection, filament list, CLI runner with timeout and log capture, rotated-STL writer, `result.json` → placement, G-code parser incl. per-segment deposition time | `gcodefem slice model.stl --rot 0,90,0 --filament "Bambu PETG HF @BBL A1M"` prints layer and feature stats; parser tests run on the cube fixture |
+| M1 | **Slice & parse**: read the current Bambu selection, filament list, CLI runner with timeout and log capture, rotated-STL writer, `result.json` → placement, G-code parser incl. per-segment deposition time | `gcodefem slice model.stl --rot 0,90,0 --filament "eSun PLA+"` prints layer and feature stats; parser tests run on the cube fixture. **Done 2026-10-05.** |
 | M2 | **Solver core**: block-sparse bead-cell voxelizer (φ only, isotropic), H8 assembly, C# PCG + AmgclBridge DLL, uniform bead-resolution solve | cantilever within a few % of beam theory; DOF vs time vs memory measured; this solve becomes the **reference** for M3 |
 | M3 | **Octree adaptivity**: forest of root blocks, Galerkin coarsening, 2:1 balance, hanging-node constraints, downscaling, mark/refine/re-solve loop, RAM-based L suggestion | adaptive min SF (isotropic von Mises for now) within 5 % of the M2 reference using a fraction of its DOF; time per pass and coarse-level bias measured; defaults for L and k chosen |
 | M4 | **Viewer**: model, toolpaths with layer slider, cells, octree overlay, result colouring | cube toolpaths coloured by feature; cantilever result and refinement shown |

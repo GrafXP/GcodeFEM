@@ -102,8 +102,11 @@ public static class Assembler
         return system;
     }
 
-    /// <summary>Uniform traction per load: each selected face carries force × (face area / total area), a quarter per corner.</summary>
-    static double[] Loads(FemMesh mesh, LoadCase loadCase)
+    /// <summary>
+    /// Uniform traction per load: each selected face carries force × (face area / total area), a quarter per corner.
+    /// <paramref name="loadedCells"/>, if given, collects the cells those faces belong to.
+    /// </summary>
+    public static double[] Loads(FemMesh mesh, LoadCase loadCase, ISet<int>? loadedCells = null)
     {
         var rhs = new double[3 * mesh.NodeCount];
         if (loadCase.Loads.Count == 0) return rhs;
@@ -115,6 +118,7 @@ public static class Assembler
             if (area <= 0) throw new InvalidOperationException("A load selects no boundary faces.");
             foreach (var f in selected)
             {
+                loadedCells?.Add(f.Cell);
                 var share = load.TotalForce * (float)(f.Area / area / 4);
                 foreach (var node in new[] { f.N0, f.N1, f.N2, f.N3 })
                 {
@@ -127,7 +131,7 @@ public static class Assembler
         return rhs;
     }
 
-    static bool[] FixedDofs(FemMesh mesh, LoadCase loadCase)
+    public static bool[] FixedDofs(FemMesh mesh, LoadCase loadCase)
     {
         var fixedDofs = new bool[3 * mesh.NodeCount];
         for (var n = 0; n < mesh.NodeCount; n++)
@@ -146,7 +150,7 @@ public static class Assembler
     }
 
     /// <summary>Zero displacement: fixed rows and columns become identity, the load on them is dropped.</summary>
-    static void ApplyFixtures(LinearSystem s)
+    internal static void ApplyFixtures(LinearSystem s)
     {
         Parallel.For(0, s.Size, row =>
         {

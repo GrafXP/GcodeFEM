@@ -28,16 +28,19 @@ Studio, linear solve through AMGCL.
 
 ---
 
-## 2. Verified on this machine (2026-10-05)
+## 2. Verified on the two development machines
+
+The laptop was set up on 2026-10-05 (M0–M2) and the desktop on 2026-10-06 (M3). Timings in
+this plan say which machine they come from.
 
 | Fact | Value |
 | --- | --- |
-| Bambu Studio | 2.08.02.61, `C:\Program Files\Bambu Studio\bambu-studio.exe` |
-| Active setup | X1 Carbon 0.4 nozzle · Bambu PLA Basic @BBL X1C · 0.20mm Standard @BBL X1C (read live from `BambuStudio.conf`). The account also has A1 and A1 mini presets. |
-| Account presets | Bambu login syncs them to `%APPDATA%\BambuStudio\user\<app.preset_folder>\{filament,process}`: 27 filaments (mostly eSun, Sunlu, Purefil, addNorth, Prusament, greentec) and 34 processes, all inheriting from system presets |
-| .NET SDK | 10.0.201 (newest GA; .NET 11 ships Nov 2026) |
-| C++ toolchain | VS Build Tools 2026 (18.10.2) at `C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools`: MSVC 19.51, CMake 4.3.1 (bundled), OpenMP 2.0 (`/openmp`; `/openmp:llvm` if AMGCL needs newer). C# → native OpenMP DLL via P/Invoke verified, 8 threads. |
-| Hardware | i5-8350U 4 cores · 8 GB RAM · Intel UHD 620 (DX11 OK) |
+| Bambu Studio | 2.08.02.61 on both, `C:\Program Files\Bambu Studio\bambu-studio.exe`. A fresh slice of the cube on the desktop matches the laptop's fixture in every G-code line. |
+| Active setup | Read live from `BambuStudio.conf`, so it differs per machine. Laptop: X1 Carbon 0.4 nozzle · Bambu PLA Basic @BBL X1C · 0.20mm Standard @BBL X1C. Desktop: X1 Carbon 0.4 nozzle · Bambu TPU for AMS · the user process "0.12mm Normal". Tests and fixtures name their presets, so they don't depend on it. |
+| Account presets | Bambu login syncs them to `%APPDATA%\BambuStudio\user\<app.preset_folder>\{filament,process}`: about 25 filaments (mostly eSun, Sunlu, Purefil, addNorth, Prusament, greentec) and 30 processes, all inheriting from system presets |
+| .NET SDK | 10.0.201 (laptop), 10.0.203 (desktop) |
+| C++ toolchain | Laptop: VS Build Tools 2026 (18.10.2), MSVC 19.51, CMake 4.3.1. Desktop: VS 2022 Build Tools (17.14), MSVC 14.44, with its bundled CMake. `native\build.cmd` finds whichever install has the C++ workload through `vswhere`. OpenMP 2.0 (`/openmp`). |
+| Hardware | Laptop: i5-8350U 4 cores · 8 GB RAM · Intel UHD 620 (DX11 OK). Desktop: i7-8700K 6 cores / 12 threads · 32 GB RAM · GTX 1070 Ti. |
 
 **Headless slicing works, but only with flattened presets** (about 1.4 s for a 20 mm cube):
 
@@ -224,8 +227,9 @@ The printed 20 mm cube (3.7 g of PLA, X1C, 0.20 Standard) gives:
 - 159,274 nodes and 477,822 DOF (**≈ 130k DOF per gram**, about 4 DOF per cell)
 
 Storing cells is cheap: about 4 bytes each. Solving every cell at once is what's
-expensive: about 3 KB of RAM per DOF at the peak, so full bead resolution stops around
-**1.5 M DOF ≈ 11–12 g of PLA** on this 8 GB laptop, at about a minute per solve.
+expensive: about 5 KB of RAM per DOF at the peak (§7.1), so full bead resolution stops
+around **1 M DOF ≈ 7–8 g of PLA** on the 8 GB laptop and around 4 M DOF ≈ 30 g on the
+32 GB desktop.
 The octree solve (§7.2) only goes down to bead resolution where stress is high, so the
 cost follows the size of the hotspots, not the size of the part.
 
@@ -248,22 +252,55 @@ offers: per-cell rotated orthotropic material from toolpaths.
 
 **AMGCL's stock C API** (`lib/amgcl.h`) cannot pass rigid-body modes or block size, and
 those are where the 20× comes from. So `native/AmgclBridge` is our own ~150-line C++ DLL:
-- **In:** CSR matrix, node coordinates, right-hand side, tolerance, smoother choice.
+- **In:** CSR matrix, node coordinates, right-hand side, start guess, tolerance, smoother.
 - **Inside:** builds `rigid_body_modes` from the coordinates and solves with CG on 3×3
-  double blocks, preconditioned by smoothed aggregation (`as_scalar`) on 3×3 float blocks.
+  double blocks, preconditioned by smoothed aggregation (`as_scalar`).
 - **Out:** displacements and iteration info.
 - Built by `native\build.cmd` (CMake + MSVC, `/openmp`) into `native\bin`, which is not
   in git. The vendored AMGCL 1.5.0 headers live in `native\third_party`.
 
-**Measured on this laptop (M2):**
+**The preconditioner runs in double precision** (changed in M3). M2 used single-precision
+blocks to halve its memory, and that worked on the cube in compression and on solid beams.
+On a printed bracket in bending it does not: CG stalls at a residual of 2e-4 and never
+reaches 1e-8. Octree meshes with hanging nodes suffer the same way (550 iterations where
+double precision needs 33). So the default is now:
+
+- ILU(0) smoothing on double blocks. Where it works it needs 20–70 iterations.
+- If that has not converged after 150 iterations, carry on with Gauss–Seidel smoothing,
+  which cannot break down on a positive definite matrix. This is needed: even in double
+  precision ILU(0) stalled on the 2.4 M DOF bracket below.
+- Single precision stays available as `--solver amg-ilu0-single`.
+- **The solver checks memory before it starts.** A native allocation that fails takes the
+  whole process down (seen twice on the desktop while other programs held most of its
+  memory). So a solve is refused with a clear message unless its estimated need plus a
+  quarter fits in the free RAM and in the free commit (`MemoryStatus`). When ILU(0) does
+  not fit but Gauss–Seidel does, the automatic choice goes straight to Gauss–Seidel.
+
+**Measured on the laptop (M2, single precision):**
 
 | Test | Result |
 | --- | --- |
-| Smoothers on the printed cube (478k DOF) | **ILU(0): 31 iterations, setup 5.6 s, solve 7.3 s** (default). Chebyshev: 146 iterations, 58 s. SPAI-0: 453 iterations, 79 s. Thin infill walls need the strong smoother. |
+| Smoothers on the printed cube (478k DOF) | **ILU(0): 31 iterations, setup 5.6 s, solve 7.3 s**. Chebyshev: 146 iterations, 58 s. SPAI-0: 453 iterations, 79 s. Thin infill walls need the strong smoother. |
 | OpenMP | 4 cores give 3.5× over one thread |
 | Solid cantilevers, `gcodefem bench` | 23k / 170k / 555k / 1.29M DOF → 0.8 / 4.2 / 18 / 48 s total, iterations flat at about 24, peak RAM 0.1 / 0.7 / 2.2 / 3.9 GB. **AMG setup is the largest single cost.** |
 | C# Jacobi-PCG | 1,054 iterations and 91 s at 170k DOF, about 45× slower than AMGCL. Only a fallback. |
 | Accuracy | tip deflection 1.5–2.5 % stiffer than Timoshenko (8-node hex with a fully clamped root). The patch test is exact to 7 digits. |
+
+**Measured on the desktop (M3), bead resolution:**
+
+| Test | ILU(0) double (default) | ILU(0) single | Gauss–Seidel |
+| --- | --- | --- | --- |
+| Printed cube in compression, 478k DOF | 29 iterations, 6.4 s, 2.1 GB | 33 iterations, 5.5 s, 1.6 GB | 82 iterations, 11.7 s, 1.7 GB |
+| Printed L-bracket in bending, 378k DOF | 67 iterations, 9.8 s, 1.6 GB | **not converged**: residual 2e-4 after 600 iterations | 92 iterations, 8.8 s, 1.4 GB |
+| Solid cantilever, 1.29M DOF | 21 iterations, 20 s, 6.4 GB | 23 iterations, 17 s, 4.8 GB | not measured |
+| Printed L-bracket 80 mm in bending, 2.43M DOF | **stalled**: no convergence in 9 minutes, 11.3 GB | not measured | 274 iterations, 177 s, 8.4 GB |
+
+- Double precision costs 15–30 % more time and about a third more memory, **about 5 KB per
+  DOF at the peak**; the single-precision smoothers need about 3.6 KB.
+- **Thin printed structure in bending gets harder with size**: Gauss–Seidel needs 92
+  iterations at 378k DOF and 274 at 2.43M, where solid beams stay at about 22 at any
+  size. The octree's meshes do not show this: its last pass on the same 80 mm bracket
+  (483k DOF) took 35 iterations.
 
 **C# side (Core/Fem):**
 - **Element stiffness:** H8 element stiffness for rotated orthotropic material, cached per
@@ -296,8 +333,14 @@ element, and the analysis starts with each root block as a single element.
 
 - L = 3 is the power of two closest to the 10×10×10 Martin asked for. Splitting halves
   each axis, so sizes must be powers of two.
-- The app suggests L from free RAM and part size, and the user can override it. A coarse
-  pass at L = 3 on a 50 g part is a few thousand elements, under a second to solve.
+- `OctreeAdvisor` suggests L from free RAM and part size, and the user can override it:
+  - The DOF budget is what fits in 60 % of the free physical memory at 5 KB per DOF.
+  - It picks the finest of L = 3, 4, 5 whose coarse pass uses at most 1/20 of that budget.
+  - **L = 0 for small parts** (under 250k DOF at bead resolution): every bead cell is an
+    element and there is one pass. The octree only pays off on big parts (see the
+    measurements below).
+- Measured: **L changes the cost of the first passes, not the result.** On the printed
+  bracket, L = 2, 3 and 4 end on the same mesh and the same numbers.
 
 **Coarse elements get their stiffness from their own bead cells** (Galerkin coarsening):
 
@@ -307,31 +350,98 @@ element, and the analysis starts with each root block as a single element.
 - It's built bottom-up once per orientation, so each coarse element already reflects its
   walls, infill lines and gaps, with no separate homogenisation model.
 - P is sparse: each child corner depends on 1, 2, 4 or 8 parent corners. That makes the
-  products ~7× cheaper than dense ones, about a second for 1.5 M cells.
+  products ~7× cheaper than dense ones. Measured: the coarse pass of a 570k-cell part is
+  set up in 1.3 s, Galerkin sums, mesh and assembly together.
+- P uses the real layer heights. With a thicker first layer the plane between two
+  children is not halfway up their parent, and using ½ there would break rigid rotations.
+- A matrix is built when its element becomes a leaf, straight from its cells, and only
+  kept while it is one (4.6 KB each). Bead-cell leaves store nothing: they share one
+  matrix per layer height, scaled by E φ.
+- A fully filled coarse element comes out as the exact brick element of its size (tested).
 - Bias: interpolation forces the inside of a coarse element to deform trilinearly, so
-  coarse elements come out **stiffer** than reality. The bias is largest where an element
-  contains thin members that would bend (an infill line, or a thin rib with one element
-  through its thickness). That's acceptable for *finding* hotspots, because the refined
-  passes produce the numbers. M3 measures the bias against a full bead-resolution solve.
+  coarse elements come out **stiffer** than reality, and the stresses read off big ones
+  come out **much lower** (measured below). The bias is largest where an element contains
+  thin members that would bend (an infill line, or a thin rib with one element through
+  its thickness). That's acceptable for *finding* hotspots, because the refined passes
+  produce the numbers.
 
-**Adaptive loop:**
-1. **Coarse solve** with every root block as one element. Seconds, even for big parts.
-2. **Downscale:** interpolate the coarse displacements to every bead cell, and evaluate
-   that cell's stress and failure index with its own material. This is cheap and already
-   separates walls from infill inside one coarse element.
+**Adaptive loop** (`AdaptiveAnalysis`):
+
+1. **Coarse solve** with every root block as one element. Under a second, even for big
+   parts.
+2. **Downscale:** evaluate every bead cell's stress at its centre from its element's
+   displacement field and the cell's own stiffness. This is cheap and already separates
+   walls from infill inside one coarse element.
 3. **Mark** elements for refinement:
-   - estimated SF < k × current min SF (default k = 2)
-   - the top strain-energy elements
+   - elements holding a cell stressed above peak / k (default **k = 2**; with real failure
+     criteria in M8 this becomes SF < k × min SF)
    - always: elements touching mount and load interfaces, where stress concentrates
-4. **Refine** marked elements by one level (split into 8). Keep the tree 2:1 balanced
-   (neighbours differ by at most one level) and add a one-element buffer around marked
-   regions.
-5. **Re-solve.** Hanging nodes on 2:1 faces and edges are tied to the coarse side by
-   (bi)linear interpolation and eliminated during assembly (u = T û). The previous
-   solution is the starting guess (warm start).
-6. **Stop** when min SF changes by less than 3 % between passes and stays in the same
-   place, when the hotspot reaches bead level, or when the DOF budget is used up. The UI
-   shows the last change as a convergence indicator.
+   - strain energy: at least **90 %** of it must sit in elements of at most 2³ cells, so
+     the coarser elements holding the most energy are marked until it does. This is what
+     keeps the load paths around a hotspot from being too stiff.
+   - one ring of same-size neighbours around everything marked (the buffer)
+4. **Refine** marked elements by one level (split into the children that hold material).
+   The tree stays 2:1 balanced across faces, edges and corners, so a split can force
+   coarser neighbours to split too.
+5. **Re-solve.** A node in the middle of a coarser neighbour's edge or face hangs: it
+   follows that edge's or face's corners by linear interpolation and is eliminated during
+   assembly (K̂ = Tᵀ K T). The previous solution, interpolated, is the starting guess.
+6. **Stop** when
+   - nothing is left to refine: every cell above peak / k is a bead-resolution element, or
+   - the peak sits in bead-resolution cells and the last pass moved it by less than 3 %, or
+   - the next pass would exceed the DOF budget, or the pass limit (10) is reached.
+
+**Loads and fixtures stay defined on the bead cells** and are carried to whatever mesh a
+pass uses:
+
+- A load on a bead node goes to the corners of the element it lies in, by their shape
+  functions (f̂ = Tᵀ Pᵀ f). The total force is preserved exactly.
+- A bead node held by a fixture sits on a corner, an edge, a face or the inside of its
+  element, and every corner of that part of the element is fixed. That is exact once the
+  element is a bead cell, and too stiff rather than too loose before.
+- So the octree's displacement fields are always a subset of the bead cells' fields. Its
+  compliance f·u can only grow towards the full solution as it refines (tested), and at
+  L = 0 it assembles the very same matrix as the M2 mesh (tested).
+
+**Measured against the full bead-resolution solve (M3, desktop).** Defaults: L = 3, k = 2,
+buffer 1, energy share 90 %. "Peak" is the highest von Mises stress and "deflection" the
+mean displacement of the loaded face, both as a fraction of the full solve. Where the
+location was compared (both brackets, the compressed cube) the peak was in the same cell
+as in the full solve. Times vary by ±30 % on this machine.
+
+| Part and load (DOF at bead resolution) | Coarse pass: peak | Final: peak | Final: deflection | DOF | Passes | Time vs full |
+| --- | --- | --- | --- | --- | --- | --- |
+| Printed L-bracket 40 mm, 3.5 g, bending (378k) | 0.54 | 0.97 | 0.98 | 36 % | 4 | 3.6 s vs 10 s |
+| Printed cube 20 mm, pushed sideways (478k) | 0.62 | 0.99 | 0.98 | 36 % | 5 | 7 s vs 8 s |
+| Printed cube 20 mm, compressed (478k), energy rule off | 0.88 | 1.00 | 1.00 | 67 % | 4 | 6 s vs 7 s |
+| Solid cantilever 84 × 13 × 13 mm (1.29M) | 0.70 | 1.00 | 1.00 | 22 % | 4 | 11 s vs 20 s |
+| Printed L-bracket 80 mm, 18 g, bending (2.43M) | 0.51 | 0.95 | 0.95 | 20 % | 5 | 29 s vs 177 s |
+
+- The 80 mm bracket also needed 3.1 GB instead of 8.4 GB, and its full solve only
+  converged with Gauss–Seidel smoothing (§7.1).
+- **What the element size at the hotspot does to the peak** on printed parts: 0.5–0.6 of
+  the real value at 8³ cells, 0.75–0.9 at 4³, anywhere from 0.87 to 1.16 at 2³. Only
+  bead-resolution cells give a number to rely on.
+- **The fine zone has to reach beyond the hotspot.** With every cell above half the peak
+  at bead resolution, the still-coarse surroundings are a few percent too stiff and take
+  load off the hotspot. That is the remaining 1–5 %.
+
+How the options move that, on the 40 mm bracket:
+
+| Options | Peak vs full | DOF vs full |
+| --- | --- | --- |
+| k = 2, no buffer, no energy rule | 0.88 | 20 % |
+| k = 2, buffer 1, no energy rule | 0.96 | 34 % |
+| **k = 2, buffer 1, energy 90 % (default)** | **0.97** | **36 %** |
+| k = 2, buffer 2 | 0.99 | 46 % |
+| k = 3, buffer 1 | 0.99 | 52 % |
+| k = 4, buffer 1 | 1.00 | 58 % |
+
+- k = 2 meets the 5 % target at the lowest cost. k = 3 is the setting for 1 %.
+- The energy rule buys about a point of accuracy on the peak and two on the deflection
+  for a few percent more DOF.
+- **The octree pays off on big parts only.** On the 3–4 g parts it is no faster than the
+  full solve; on the 18 g bracket it is 6× faster and uses a third of the memory.
 
 ### 7.3 Performance rules from day one
 - **Block-sparse storage.** Cell data lives in dense per-block arrays (structure of arrays,
@@ -354,17 +464,24 @@ element, and the analysis starts with each root block as a single element.
 ### 7.4 Limits and validation
 
 Known limits:
+
 - **Staircase surfaces** on slanted faces create artificial stress peaks. Mitigation:
   evaluate the safety factor one cell in from the surface and flag surface peaks.
 - **Linear static only** in v1: no plasticity, creep, large deflection, contact or
   buckling.
+- **A result that stops short of bead resolution is optimistic.** When the DOF budget ends
+  the refinement early, the hotspot still sits in coarse elements and its stress reads
+  low (§7.2 has the factors). The pass table shows the element level at the peak, and the
+  UI must say so next to the safety factor.
 
 Validation:
-- Cantilever vs Euler–Bernoulli (δ = FL³ / 3EI).
-- Uniform-tension patch test.
+
+- Cantilever vs Euler–Bernoulli (δ = FL³ / 3EI): done in M2.
+- Uniform-tension patch test: done, on the uniform mesh (M2) and through hanging nodes (M3).
+- Adaptive octree vs full bead resolution on parts small enough for both: done in M3
+  (§7.2), as tests and as `gcodefem adapt --reference`.
 - A bar printed flat vs upright reproduces the TDS XY/Z ratio.
 - CalculiX on the same small mesh.
-- Adaptive octree vs full bead resolution on parts small enough for both (M3).
 - Real coupons (M10).
 
 ---
@@ -482,7 +599,7 @@ that comes early.
 | M0 | **Scaffold**: slnx, Core / App / Cli / Tests, Helix viewport shows an STL. Install the C++ build tools. | `dotnet build` + `dotnet test` green, window shows `samples/cube20.stl` |
 | M1 | **Slice & parse**: read the current Bambu selection, filament list, CLI runner with timeout and log capture, rotated-STL writer, `result.json` → placement, G-code parser incl. per-segment deposition time | `gcodefem slice model.stl --rot 0,90,0 --filament "eSun PLA+"` prints layer and feature stats; parser tests run on the cube fixture. **Done 2026-10-05.** |
 | M2 | **Solver core**: block-sparse bead-cell voxelizer (φ only, isotropic), H8 assembly, C# PCG + AmgclBridge DLL, uniform bead-resolution solve | cantilever within a few % of beam theory; DOF vs time vs memory measured; this solve becomes the **reference** for M3. **Done 2026-10-05:** cantilever 1.5–2.5 % of Timoshenko, measurements in §6 and §7.1. |
-| M3 | **Octree adaptivity**: forest of root blocks, Galerkin coarsening, 2:1 balance, hanging-node constraints, downscaling, mark/refine/re-solve loop, RAM-based L suggestion | adaptive min SF (isotropic von Mises for now) within 5 % of the M2 reference using a fraction of its DOF; time per pass and coarse-level bias measured; defaults for L and k chosen |
+| M3 | **Octree adaptivity**: forest of root blocks, Galerkin coarsening, 2:1 balance, hanging-node constraints, downscaling, mark/refine/re-solve loop, RAM-based L suggestion | adaptive min SF (isotropic von Mises for now) within 5 % of the M2 reference using a fraction of its DOF; time per pass and coarse-level bias measured; defaults for L and k chosen. **Done 2026-10-06:** peak within 5 % on every part tried, with 20–67 % of the DOF; k = 2 and L = 3 kept, L = 0 for small parts; measurements in §7.2. The solver had to move to double precision on the way (§7.1). |
 | M4 | **Viewer**: model, toolpaths with layer slider, cells, octree overlay, result colouring | cube toolpaths coloured by feature; cantilever result and refinement shown |
 | M5 | **Interfaces & loads editor**: picking, region growing, glyphs, load cases, project save/load | define a bracket's bolt holes + force in the UI and solve |
 | M6 | **Materials & TDS**: JSON DB, Bambu TDS import, filament → material mapping | PLA Basic + PETG HF generated from their PDFs with sources |
@@ -499,21 +616,43 @@ that comes early.
   tool is good at is **ranking orientations and finding the weak spot**, and that is all the
   loop needs. Real coupons in M10 tighten the numbers.
 - **The coarse pass can miss a hotspot.** Coarse elements are too stiff where they hold
-  thin members that bend, so a real hotspot there can look harmless. Mitigations:
-  - a generous threshold k
+  thin members that bend, so a real hotspot there can look harmless. Measured in M3: a
+  hotspot inside an 8³ element reads at 0.5–0.6 of its real stress on printed parts. Two
+  hotspots in similar structure are biased alike and keep their order, but a thin rib
+  next to a massive region may not. Mitigations:
+  - the threshold k: everything above half the peak is refined, every pass
   - interfaces are always refined
+  - 90 % of the strain energy must sit in fine elements
   - per-cell downscaled stresses
-  - a check against full bead resolution on small parts (M3)
-  - a "verify" option that refines everything when the part is small enough
+  - small parts are solved at bead resolution outright (L = 0), and `--level 0` does the
+    same for any part that fits in memory
 - **Face-connected rasterisation of diagonal lines** adds a little extra material and
   stiffness. φ-scaling and 0°/45° coupons correct it.
 - **Native dependency:** the AMGCL bridge needs MSVC to build. The C# fallback keeps
   everything working without it, but it is about 45× slower (M2). In practice it only
   handles tests and small parts.
-- **AMG setup dominates solve time** (25 s of 48 s at 1.3 M DOF). The octree passes in M3
-  change the matrix every time, so the setup can't be reused across passes. To keep them
-  cheap: a looser tolerance (1e-6) for intermediate passes, and the full 1e-8 only on the
-  final one.
+- **The octree's passes are not free.** Each pass changes the matrix, so the AMG setup
+  (20–40 % of a solve) can't be reused, and the passes together cost 1.6–2.8× one solve
+  of the last mesh. The octree wins only when that mesh is well under the full one, which
+  is why small parts skip it. Two things could cut this and are not done yet:
+  - The last pass often only refines a fringe: when the peak drops between passes, more
+    cells cross peak / k. Marking with some margin below the threshold would save that
+    pass.
+  - A looser tolerance (1e-6) for all but the last pass.
+- **Evenly stressed parts refine almost everywhere.** If most of the part is above half
+  the peak (the cube in compression), the last mesh is most of the full one. On a big
+  part that ends at the DOF budget with a coarse, optimistic result (§7.4).
+- **ILU(0) has no convergence guarantee.** Single precision failed on a small printed
+  bracket and double precision on a 2.4 M DOF one (§7.1). Gauss–Seidel takes over after
+  150 iterations; it has converged on everything so far, at 1.4–3× the iterations where
+  both work.
+- **Bead resolution on a big thin-walled part is slow as well as large**: the iteration
+  count grows with size there (§7.1). That makes the octree the only practical route for
+  big parts, not just the cheaper one.
+- **Memory is shared with whatever else runs.** The desktop has 32 GB but a 2 GB page
+  file, so its commit limit is 34 GB, and other programs held over 20 GB of that during
+  M3. The solver now refuses a solve that will not fit (§7.1), and the octree's DOF
+  budget shrinks with the free memory.
 - The Bambu CLI is undocumented and can change between versions. The wrapper isolates it,
   logs the version and always checks `result.json` `return_code`.
 - HelixToolkit SharpDX sits on the archived SharpDX library. It works on .NET 10, but it is

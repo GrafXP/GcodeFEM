@@ -19,6 +19,18 @@ static class SliceCommands
         return 0;
     }
 
+    /// <summary>Writes a generated test part as an STL.</summary>
+    public static int Sample(CommandLine commandLine)
+    {
+        var mesh = commandLine.Positional[0] switch
+        {
+            "bracket" => MeshFactory.LBracket((float)commandLine.Number("leg", 40), (float)commandLine.Number("width", 10), (float)commandLine.Number("height", 8)),
+            var shape => throw new ArgumentException($"Unknown sample shape '{shape}' (use bracket)."),
+        };
+        Stl.WriteBinary(mesh, commandLine.Positional[1]);
+        return Info(commandLine.Positional[1]);
+    }
+
     public static int Presets(CommandLine commandLine)
     {
         var bambu = BambuInstallation.Locate();

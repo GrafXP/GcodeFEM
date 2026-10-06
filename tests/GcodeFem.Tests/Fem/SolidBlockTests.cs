@@ -92,6 +92,47 @@ public class SolidBlockTests
             Assert.Equal(pcg.Displacements[i], amg.Displacements[i], 6);
     }
 
+    [AmgclFact]
+    public void Gauss_seidel_takes_over_when_ilu_runs_out_of_iterations()
+    {
+        var grid = CellGrid.Solid(60, 8, 16, Pitch, Layer);
+        var bounds = new Box3(Vector3.Zero, new Vector3(60 * Pitch, 8 * Pitch, 16 * Layer));
+        var loadCase = LoadCase.ClampAndPush(bounds, Axis.X, fixMax: false, new Vector3(0, 0, -1));
+
+        var patient = StaticAnalysis.Run(grid, Material, loadCase, new AmgclSolver());
+        var impatient = StaticAnalysis.Run(grid, Material, loadCase, new AmgclSolver(iluIterationLimit: 3));
+
+        Assert.DoesNotContain("stalled", patient.Solve.Solver);
+        Assert.Contains("GaussSeidel", impatient.Solve.Solver);
+        Assert.Contains("stalled", impatient.Solve.Solver);
+        Assert.True(impatient.Solve.Converged);
+        Assert.True(impatient.Solve.Iterations > patient.Solve.Iterations);
+        for (var i = 0; i < patient.Displacements.Length; i++)
+            Assert.Equal(patient.Displacements[i], impatient.Displacements[i], 6);
+    }
+
+    [AmgclFact]
+    public void A_solve_that_cannot_fit_in_memory_is_refused_instead_of_crashing()
+    {
+        // Only the size matters for the check: 2 billion unknowns need terabytes.
+        var system = new LinearSystem
+        {
+            Size = 2_000_000_001,
+            RowPointers = [0],
+            Columns = [],
+            Values = [],
+            RightHandSide = [],
+            Coordinates = [],
+            Fixed = [],
+        };
+
+        var error = Assert.Throws<InvalidOperationException>(() => new AmgclSolver().Solve(system, [], 1e-8, 100));
+
+        Assert.Contains("Not enough memory", error.Message);
+        var (physical, commit) = MemoryStatus.Available();
+        Assert.True(physical > 0 && commit > 0);
+    }
+
     [Fact]
     public void Drops_islands_that_do_not_reach_a_fixture()
     {

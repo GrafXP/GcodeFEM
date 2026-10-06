@@ -53,9 +53,14 @@ public static class StaticAnalysis
         options ??= new AnalysisOptions();
         var watch = Stopwatch.StartNew();
         var mesh = FemMesh.Build(grid, options.MinFill, loadCase.Fixtures);
-        var meshTime = watch.Elapsed;
+        return Run(mesh, material, loadCase, solver, options, watch.Elapsed);
+    }
 
-        watch.Restart();
+    /// <summary>Solves on a mesh that is already built (with the load case's fixtures).</summary>
+    public static FemResult Run(FemMesh mesh, IsotropicMaterial material, LoadCase loadCase, ILinearSolver solver, AnalysisOptions? options = null, TimeSpan meshTime = default)
+    {
+        options ??= new AnalysisOptions();
+        var watch = Stopwatch.StartNew();
         var system = Assembler.Assemble(mesh, material, loadCase);
         var assemblyTime = watch.Elapsed;
 

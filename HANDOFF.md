@@ -111,9 +111,104 @@ Read [PLAN.md](PLAN.md) for the design. This file only tracks where things stand
 - Tests: 38 green (17 s). Slowest is the printed cube under load (13 s).
 - Material is still generic isotropic PLA (E 2500, ν 0.35) until M6/M7.
 
+## 2026-10-06 — session 2, on the desktop
+
+### New machine
+- i7-8700K, 32 GB, .NET SDK 10.0.203, Bambu Studio 2.08.02.61, VS 2022 Build Tools
+  (PLAN.md §2).
+- `native\build.cmd` used to hardcode the laptop's VS 2026 Build Tools path. It now finds
+  the C++ toolchain through `vswhere`, so it works on both machines.
+- Before any change: build clean, 38 tests green, including the Bambu integration tests.
+- Bambu CLI checked end to end:
+  - A fresh slice of the cube matches the committed fixture in all 7,643 G-code lines.
+  - The account's presets synced; a user process + TPU slices correctly as well.
+- The Bambu selection on this machine is X1C / "0.12mm Normal" / Bambu TPU for AMS. To
+  reproduce the plan's numbers, pass
+  `--process "0.20mm Standard @BBL X1C" --filament "Bambu PLA Basic @BBL X1C"`.
+
+### Solver default changed (affects M2 results)
+- **Single-precision ILU(0) does not converge on printed parts in bending.** On the
+  L-bracket at bead resolution CG stalls at a residual of 2e-4. M2 never saw it because it
+  only ran the cube in compression and solid beams.
+- `AmgclSolver` now defaults to `Auto`: ILU(0) on a double-precision preconditioner, and
+  Gauss–Seidel smoothing if that has not converged after 150 iterations.
+  - The fallback is needed: double-precision ILU(0) stalled on an 80 mm bracket at
+    2.43 M DOF (no convergence in 9 minutes), where Gauss–Seidel took 274 iterations, 177 s.
+- Cost: 15–30 % more time, a third more memory (about 5 KB per DOF). The laptop's
+  bead-resolution limit drops from 1.5 M to about 1 M DOF.
+- **The solver checks memory first** (`MemoryStatus`: free RAM and free commit). It
+  refuses a solve whose estimated need plus a quarter does not fit, and `Auto` goes
+  straight to the leaner Gauss–Seidel when only that fits.
+  - Reason: running out of memory inside the native solver kills the process (access
+    violation). It happened twice while other programs held most of the desktop's memory.
+  - The desktop's page file is only 2 GB, so its commit limit is 34 GB. A larger page
+    file would give big solves more room.
+- The bridge has three more smoothers (`amgcl_bridge_version` is 3): Gauss–Seidel,
+  ILU(0) double, ILU(1). **Rebuild the DLL on the laptop** with `native\build.cmd`.
+- Measurements in PLAN.md §7.1.
+
+### M3 octree adaptivity: done
+- `Core/Fem`:
+  - `OctreeForest`: sparse forest over the active cells of a `FemMesh`.
+    - Galerkin stiffness per leaf, summed bottom-up from its cells with the real layer
+      heights, in parallel.
+    - `Refine` splits leaves into their occupied children and keeps the 2:1 balance
+      across faces, edges and corners.
+  - `OctreeMesh`: a snapshot of the forest as a FE mesh.
+    - Nodes, hanging nodes with their masters, `CellLeaf` (which leaf each bead cell is in).
+    - `Assemble`: K̂ = Tᵀ K T, each row built by its own node, parallel without locks.
+    - `RestrictLoads` / `RestrictFixtures` carry the bead-level load case over.
+    - `CellStresses` downscales to every bead cell; `Interpolate` gives the warm start.
+  - `AdaptiveAnalysis.Run`: the pass loop (mark → refine → re-solve), with an `onPass`
+    callback for progress. `AdaptiveOptions` holds k, buffer, energy share, limits.
+  - `OctreeAdvisor`: DOF budget from free RAM, root level from part size.
+  - `Assembler.Loads` / `FixedDofs` are public now; `StaticAnalysis.Run` has an overload
+    that takes a ready `FemMesh`.
+- Defaults chosen from the measurements (PLAN.md §7.2): **k = 2, buffer 1, 90 % of the
+  strain energy in fine elements, L = 3**, and L = 0 (no octree) under 250k DOF.
+- CLI:
+  - `gcodefem adapt <stl> [--level auto|0..5] [--k] [--buffer] [--energy] [--reference]`
+    prints every pass as it finishes.
+  - `--sweep "k=2;k=3,buffer=2;…"` solves the reference once and compares option sets.
+  - `gcodefem bench --adaptive [--verbose]`: solid cantilevers, octree vs full solve.
+  - `gcodefem sample bracket <out.stl>`: writes an L-bracket (`MeshFactory.LBracket`).
+  - `gcodefem solve … --max-iterations n`.
+- Fixed on the way: `solve --fix xmax` (or `ymax`) found no nodes, because the model's
+  far X/Y faces fall between node planes. The stand-in load case now uses
+  `CellGrid.OccupiedBounds`, the cells' own outer faces.
+- New sample: `samples/bracket40.stl` (40 mm legs, 10 wide, 8 thick; 3.5 g).
+- Tests: 56 green (about 35 s, and they need about 3 GB of free memory). The octree tests
+  cover the exact brick, 2:1 balance, the patch test through hanging nodes, identity with
+  the M2 matrix at L = 0, monotone compliance, and adaptive vs full on a solid beam and on
+  the printed cube. Two more cover the Gauss–Seidel fallback and the memory check.
+- The whole suite was rerun with memory free before the commit: 56 green.
+
+### What M3 found
+- Accuracy target met: peak von Mises within 5 % of the full solve on every part tried,
+  with 20–67 % of its DOF (table in PLAN.md §7.2). k = 3 brings it within 1 %.
+- **Big coarse elements read low on printed structure**: 0.5–0.6 of the real peak at 8³
+  cells, 0.75–0.9 at 4³, and 0.87–1.16 at 2³. A result cut short by the DOF budget is not
+  to be trusted; the UI has to show the element level at the peak.
+- **The octree only pays off on big parts.** Its passes together cost 1.6–2.8× one solve
+  of the last mesh. On the 3.5 g bracket and the cube it is no faster than the full solve.
+  On an 18 g bracket (2.43 M DOF) it took 29 s and 3.1 GB against 177 s and 8.4 GB, with
+  the peak at 0.95 of the full solve.
+- Bead resolution gets harder with size on thin printed structure: the solver's iteration
+  count grows (92 at 378k DOF, 274 at 2.43 M), which the octree's meshes do not show.
+- The root level changes the cost of the first passes, not the result.
+- An evenly stressed part (cube in compression) refines almost everywhere.
+
 ## Next
-- M3 octree adaptivity, measured against the M2 bead-resolution reference
-  (PLAN.md §7.2, §13).
+- M4 viewer: model, toolpaths with layer slider, cells, octree overlay, result colouring
+  (PLAN.md §12, §13). `OctreeMesh.Leaves` and `AdaptiveResult.Passes` have what the
+  overlay needs.
+- Open items from M3:
+  - Save the last "fringe" pass by marking with a margin below peak / k (PLAN.md §14).
+  - Keep the AMG hierarchy alive in the bridge (create / solve / destroy) so that load
+    cases sharing a matrix reuse the setup (PLAN.md §7.3).
+  - `FemMesh.Build` still uses dense per-grid-slot arrays (8 bytes per slot of the
+    bounding box). Fine up to a few hundred million slots; replace before very large,
+    sparse parts.
 - Open item for M7: our feed-rate segment times ignore acceleration (≈2× short on solid
   infill). Scale per feature using `result.json` `feature_type_times` when the bond model
   needs layer times.

@@ -52,6 +52,19 @@ public class VoxelizerTests
     }
 
     [Fact]
+    public void Occupied_bounds_follow_the_cells_not_the_model()
+    {
+        // A bead across cells 2..9 of row 3: the model area is 20 cells wide, the material is not.
+        var y = 3.5f * Width;
+        var grid = Voxelizer.Voxelize(Beads((new Vector2(2 * Width, y), new Vector2(10 * Width, y))), Identity, Area);
+
+        var bounds = grid.OccupiedBounds(0.05f);
+
+        Assert.Equal(new Vector3(2 * Width, 3 * Width, 0), bounds.Min);
+        Assert.Equal(new Vector3(10 * Width, 4 * Width, Height), bounds.Max);
+    }
+
+    [Fact]
     public void The_printed_cube_becomes_one_connected_body()
     {
         var toolpath = GcodeParser.Parse(TestPaths.Sample("cube20_X1C_PLA.gcode"));

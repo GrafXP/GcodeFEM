@@ -1,4 +1,5 @@
 using System.Numerics;
+using GcodeFem.Core.Geometry;
 
 namespace GcodeFem.Core.Fem;
 
@@ -97,6 +98,22 @@ public sealed class CellGrid
                     yield return new CellIndex(i, j, k);
             }
         }
+    }
+
+    /// <summary>
+    /// Print-frame box around the cells with φ ≥ <paramref name="minFill"/>. Its faces lie on node
+    /// planes, unlike the model's own bounds, whose far X and Y faces usually cut through a cell.
+    /// </summary>
+    public Box3 OccupiedBounds(float minFill)
+    {
+        CellIndex low = new(int.MaxValue, int.MaxValue, int.MaxValue), high = new(-1, -1, -1);
+        foreach (var c in Occupied(minFill))
+        {
+            low = new CellIndex(Math.Min(low.I, c.I), Math.Min(low.J, c.J), Math.Min(low.K, c.K));
+            high = new CellIndex(Math.Max(high.I, c.I), Math.Max(high.J, c.J), Math.Max(high.K, c.K));
+        }
+        if (high.I < 0) throw new InvalidOperationException("No cells reach the minimum fill.");
+        return new Box3(NodePosition(low.I, low.J, low.K), NodePosition(high.I + 1, high.J + 1, high.K + 1));
     }
 
     /// <summary>A completely filled box of cells, for tests and benchmarks.</summary>

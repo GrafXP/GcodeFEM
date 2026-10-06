@@ -7,31 +7,47 @@ namespace GcodeFem.Cli;
 
 static class FemCommands
 {
-    /// <summary>Slice → voxelize → clamp one bbox face, load the opposite one → solve, with a timing breakdown.</summary>
-    public static async Task<int> Solve(CommandLine commandLine)
+    /// <summary>A sliced, voxelized part with one bbox face clamped and the opposite one loaded.</summary>
+    public sealed record Problem(CellGrid Grid, IsotropicMaterial Material, LoadCase LoadCase, Box3 Bounds, Axis Axis, bool FixMax, float MinFill)
+    {
+        /// <summary>Nodes of <paramref name="mesh"/> on the loaded face.</summary>
+        public List<int> LoadedNodes(FemMesh mesh)
+        {
+            var loaded = LoadCase.Component(FixMax ? Bounds.Min : Bounds.Max, Axis);
+            return [.. Enumerable.Range(0, mesh.NodeCount).Where(n => MathF.Abs(LoadCase.Component(mesh.NodePosition(n), Axis) - loaded) < 1e-3f)];
+        }
+    }
+
+    /// <summary>Slice → voxelize → clamp one bbox face and load the opposite one, as the command line says.</summary>
+    public static async Task<Problem> Prepare(CommandLine commandLine)
     {
         var (result, toolpath) = await SliceCommands.SliceAndParse(commandLine);
         var material = new IsotropicMaterial(commandLine.Number("E", IsotropicMaterial.Pla.YoungsModulus), commandLine.Number("nu", IsotropicMaterial.Pla.PoissonRatio));
         var (axis, fixMax) = ParseFace(commandLine.Option("fix") ?? "zmin");
         var force = Text.Triple(commandLine.Option("force") ?? "0,0,-100", "force");
-        var solver = LinearSolvers.ByName(commandLine.Option("solver") ?? "auto");
-        var options = new AnalysisOptions(MinFill: (float)commandLine.Number("min-fill", 0.05));
 
         var watch = Stopwatch.StartNew();
         var grid = Voxelizer.Voxelize(toolpath, result.Placement, result.PrintMesh.Bounds);
-        var voxelTime = watch.Elapsed;
-
-        var bounds = result.PrintMesh.Bounds;
-        var fem = StaticAnalysis.Run(grid, material, LoadCase.ClampAndPush(bounds, axis, fixMax, force), solver, options);
+        var minFill = (float)commandLine.Number("min-fill", 0.05);
+        var bounds = grid.OccupiedBounds(minFill); // the cells' own outer faces, so clamp and load land on node planes
 
         Console.WriteLine();
         Console.WriteLine($"load case    clamp {commandLine.Option("fix") ?? "zmin"} face, {Text.Format(force)} N on the opposite face; E {material.YoungsModulus:0} MPa, nu {material.PoissonRatio}");
-        PrintAnalysis(grid, fem, voxelTime);
+        Console.WriteLine($"cells        grid {grid.SizeX} x {grid.SizeY} x {grid.SizeZ}, {grid.BlockCount} blocks of {CellGrid.BlockSize}^3; " +
+                          $"voxelized in {watch.Elapsed.TotalSeconds:0.00} s, {grid.TotalVolume:0.0} mm3 deposited, {grid.LostVolume:0.000} mm3 outside the grid");
+        return new Problem(grid, material, LoadCase.ClampAndPush(bounds, axis, fixMax, force), bounds, axis, fixMax, minFill);
+    }
 
-        var loaded = LoadCase.Component(fixMax ? bounds.Min : bounds.Max, axis);
-        var face = Enumerable.Range(0, fem.Mesh.NodeCount)
-            .Where(n => MathF.Abs(LoadCase.Component(fem.Mesh.NodePosition(n), axis) - loaded) < 1e-3f)
-            .Select(fem.Displacement).ToList();
+    /// <summary>Solves the part at full bead resolution, with a timing breakdown.</summary>
+    public static async Task<int> Solve(CommandLine commandLine)
+    {
+        var problem = await Prepare(commandLine);
+        var solver = LinearSolvers.ByName(commandLine.Option("solver") ?? "auto");
+        var fem = StaticAnalysis.Run(problem.Grid, problem.Material, problem.LoadCase, solver,
+            new AnalysisOptions(MinFill: problem.MinFill, MaxIterations: (int)commandLine.Number("max-iterations", 50_000)));
+
+        PrintAnalysis(fem);
+        var face = problem.LoadedNodes(fem.Mesh).Select(fem.Displacement).ToList();
         if (face.Count > 0)
         {
             var mean = face.Aggregate(Vector3.Zero, (a, b) => a + b) / face.Count;
@@ -82,26 +98,31 @@ static class FemCommands
         return 0;
     }
 
-    static void PrintAnalysis(CellGrid grid, FemResult fem, TimeSpan voxelTime)
+    public static void PrintMesh(FemMesh mesh) =>
+        Console.WriteLine($"bead mesh    {mesh.Cells.Length:N0} active cells, {mesh.DroppedCells:N0} dropped ({mesh.DroppedVolume:0.0} mm3 not connected to the clamp), {3 * mesh.NodeCount:N0} DOF at bead resolution");
+
+    public static void PrintAnalysis(FemResult fem)
     {
         var mesh = fem.Mesh;
-        Console.WriteLine($"cells        grid {grid.SizeX} x {grid.SizeY} x {grid.SizeZ}, {grid.BlockCount} blocks of {CellGrid.BlockSize}^3, " +
-                          $"{mesh.Cells.Length:N0} active, {mesh.DroppedCells:N0} dropped ({mesh.DroppedVolume:0.0} mm3 not connected to the clamp)");
-        Console.WriteLine($"  voxelized  {voxelTime.TotalSeconds:0.00} s, {grid.TotalVolume:0.0} mm3 deposited, {grid.LostVolume:0.000} mm3 outside the grid");
+        PrintMesh(mesh);
         Console.WriteLine($"system       {mesh.NodeCount:N0} nodes, {fem.Dofs:N0} DOF, {fem.System.NonZeros / 1e6:0.0} M non-zeros, {Text.Megabytes(fem.System.Bytes)}; " +
                           $"mesh {fem.MeshTime.TotalSeconds:0.00} s, assembly {fem.AssemblyTime.TotalSeconds:0.00} s");
         Console.WriteLine($"solver       {fem.Solve.Solver}: {fem.Solve.Iterations} iterations, residual {fem.Solve.Residual:0.0e+0}{(fem.Solve.Converged ? "" : " NOT CONVERGED")}, " +
                           $"setup {fem.Solve.Setup.TotalSeconds:0.00} s, solve {fem.Solve.Solve.TotalSeconds:0.00} s; stresses {fem.StressTime.TotalSeconds:0.00} s");
 
         var worst = Enumerable.Range(0, mesh.Cells.Length).MaxBy(e => fem.VonMises[e]);
-        var c = mesh.Cells[worst];
-        var centre = grid.NodePosition(c.I, c.J, c.K) + new Vector3(grid.Pitch / 2, grid.Pitch / 2, grid.CellHeight(c.K) / 2);
-        Console.WriteLine($"result       max |u| {fem.MaxDisplacement():0.0000} mm, max von Mises {fem.VonMises[worst]:0.00} MPa at {Text.Format(centre)} (fill {mesh.Fill[worst]:0.00}); " +
+        Console.WriteLine($"result       max |u| {fem.MaxDisplacement():0.0000} mm, max von Mises {fem.VonMises[worst]:0.00} MPa at {Text.Format(CellCentre(mesh, worst))} (fill {mesh.Fill[worst]:0.00}); " +
                           $"applied {Text.Format(fem.AppliedForce())} N");
         Console.WriteLine($"memory       peak working set {Text.Megabytes(PeakWorkingSet())}");
     }
 
-    static double Timoshenko(IsotropicMaterial m, double length, double width, double height)
+    public static Vector3 CellCentre(FemMesh mesh, int cell)
+    {
+        var (c, grid) = (mesh.Cells[cell], mesh.Grid);
+        return grid.NodePosition(c.I, c.J, c.K) + new Vector3(grid.Pitch / 2, grid.Pitch / 2, grid.CellHeight(c.K) / 2);
+    }
+
+    public static double Timoshenko(IsotropicMaterial m, double length, double width, double height)
     {
         var inertia = width * height * height * height / 12;
         var kappa = 10 * (1 + m.PoissonRatio) / (12 + 11 * m.PoissonRatio);
@@ -116,7 +137,7 @@ static class FemCommands
         _ => throw new FormatException($"--fix expects xmin, xmax, ymin, ymax, zmin or zmax but got '{text}'."),
     };
 
-    static long PeakWorkingSet()
+    public static long PeakWorkingSet()
     {
         using var process = Process.GetCurrentProcess();
         process.Refresh();

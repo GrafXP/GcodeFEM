@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Numerics;
 using GcodeFem.Core.Gcode;
 using GcodeFem.Core.Geometry;
 using GcodeFem.Core.Slicing;
@@ -25,7 +26,8 @@ static class SliceCommands
         var mesh = commandLine.Positional[0] switch
         {
             "bracket" => MeshFactory.LBracket((float)commandLine.Number("leg", 40), (float)commandLine.Number("width", 10), (float)commandLine.Number("height", 8)),
-            var shape => throw new ArgumentException($"Unknown sample shape '{shape}' (use bracket)."),
+            "beam" => MeshFactory.Box(Vector3.Zero, new Vector3((float)commandLine.Number("length", 60), (float)commandLine.Number("width", 10), (float)commandLine.Number("height", 10))),
+            var shape => throw new ArgumentException($"Unknown sample shape '{shape}' (use bracket or beam)."),
         };
         Stl.WriteBinary(mesh, commandLine.Positional[1]);
         return Info(commandLine.Positional[1]);

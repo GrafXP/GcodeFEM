@@ -198,10 +198,86 @@ Read [PLAN.md](PLAN.md) for the design. This file only tracks where things stand
 - The root level changes the cost of the first passes, not the result.
 - An evenly stressed part (cube in compression) refines almost everywhere.
 
+## 2026-10-07 — session 3, on the desktop
+
+- M3 is committed as `57f5d82` and pushed, on the branch **`m3-octree`**, not on `main`.
+  `main` is still at M2. To bring it over: `git switch main`, `git merge --ff-only m3-octree`,
+  `git push`.
+- The whole suite was rerun with memory free before that commit: 56 green.
+
+### M4 viewer: done
+- `Core/Visual` makes everything the viewer draws as plain arrays, so it is tested without
+  a window:
+  - `Palette`, `ColourScale`, `Legend`: the colours and what they mean (rules in PLAN.md §12).
+  - `ToolpathGeometry`: beads as pointed tubes (10 vertices each) or as lines;
+    `Indices(layers, features)` picks what is drawn. `ToolpathColours`: colour per segment
+    and its legend, for line type, temperature, fan, speed, time, width.
+  - `CellSurface`: the cell faces outside air can reach, for a `CellRange`; per-face cell
+    and per-vertex grid node, so colours and the deformed shape are applied afterwards.
+  - `OctreeWireframe`: outlines of the coarse elements, kept to the shown material.
+  - `ResultFields`: per-node displacements, per-cell displacement and σzz.
+- `Core/Fem`: `AdaptiveOptions.KeepPassFields` keeps every pass's element level and von
+  Mises stress per cell (`AdaptivePass.CellLevels` / `.VonMises`), which is what lets the
+  viewer step through the passes. `OctreeMesh.CellLevels()` is new.
+- `GcodeFem.App`:
+  - `MainViewModel`: settings, Slice and Solve (both off the UI thread), the legend, the pass
+    table and the result summary with its warning.
+  - `Scene.cs`: `SceneBuilder` turns a `ViewState` into Helix geometry on a background
+    thread. Redraws run one at a time and the last request wins. `PrintJob` holds one slice
+    with its caches and is replaced as a whole by the next slice.
+  - `MainWindow`: one viewport, the four view buttons, a legend laid over the viewport, the
+    pass table below it.
+  - `StartupOptions`: the command line, including `--screenshot`.
+- CLI: `gcodefem sample beam <out.stl> [--length 60] [--width 10] [--height 10]`.
+  New sample: `samples/beam60.stl`.
+- Tests: 80 green (about 30 s; 24 are new and take under a second together).
+- Checked by screenshot, each with
+  `--process "0.20mm Standard @BBL X1C" --filament "Bambu PLA Basic @BBL X1C"`:
+
+  | Check | Arguments |
+  | --- | --- |
+  | Cube toolpaths by line type, cut at layer 60 | `cube20.stl --view toolpaths --layers 1-60` |
+  | Cube cells | `cube20.stl --view cells --layers 1-60` |
+  | Printed beam as a cantilever: 4 passes, 119k unknowns, 7 s | `beam60.stl --view results --fix xmin --force 0,0,-20 --look 30,60,-35` |
+  | The same after the coarse pass | the line above with `--pass 1` |
+  | Where it refined | the same with `--colour elementsize` |
+  | Bracket standing on edge | `bracket40.stl --view toolpaths --rot 90,0,0 --hide sparse` |
+  | 80 mm bracket (`sample bracket --leg 80 --width 20 --height 16`, 574k cells): 5 passes, 554k unknowns, 61 s, 1.8 GB | `bracket80.stl --view results --fix ymax --force 0,0,-30` |
+
+### What M4 found
+- **Screenshots need no screen capture.** `RenderTargetBitmap` of the window content
+  includes the Helix viewport (it renders through a D3DImage). The content needs an opaque
+  background, or the panels come out transparent.
+- **The far walls are split over two cell columns.** The cells view shows the +X and +Y
+  outer walls with fill 0.4 and 0.6 where the −X and −Y walls have 1.0: the part is 20 mm
+  wide and the grid 48 × 0.42 = 20.16 mm, so the last wall straddles a cell boundary. The
+  plastic is all there, but a wall two soft cells thick is not the same as one full cell.
+  Worth a look when cells get their line direction (M7).
+- Outlining every element above bead level paints large areas grey on a real part, and
+  outlines through infill voids hide the cut. Hence 4³ cells and up, along material only.
+- The load on the 80 mm bracket above twists it as well as bending it. Its last two passes
+  took 163 and 126 iterations (554k unknowns); M3's bending load on its 80 mm bracket took
+  35 in the last pass (483k unknowns).
+- Helix gotchas:
+  - `Color`, `Axis` and `MeshGeometry3D` exist in Helix, in WPF and in Core; the view model
+    names the ones it means with `using` aliases.
+  - A Helix collection is filled fastest with `Resize` and a copy into
+    `GetInternalArray()` (`SceneBuilder.Fill`).
+  - The big models are not hit-testable (`IsHitTestVisible="False"`), or every mouse click
+    would test millions of triangles. Probing (M8) should march through the cell grid.
+
 ## Next
-- M4 viewer: model, toolpaths with layer slider, cells, octree overlay, result colouring
-  (PLAN.md §12, §13). `OctreeMesh.Leaves` and `AdaptiveResult.Passes` have what the
-  overlay needs.
+- M5 interfaces and loads editor: picking, region growing, glyphs, load cases, project
+  save/load (PLAN.md §10, §13). It replaces the stand-in load case in `MainViewModel.SolveAsync`.
+  Interfaces live in the part frame, the viewer shows the print frame: the model view is
+  the natural place for picking.
+- Open items from M4:
+  - A running solve cannot be cancelled: `AdaptiveAnalysis.Run` takes no cancellation
+    token, and neither does the native solver.
+  - The layer range is the only cut. A vertical cut needs `CellRange` bounds in I or J,
+    which `CellSurface` and `OctreeWireframe` already take.
+  - Every redraw uploads new vertex buffers. Fine at 574k cells (0.1–0.5 s); a part several
+    times that size would want index-only updates for the layer sliders.
 - Open items from M3:
   - Save the last "fringe" pass by marking with a margin below peak / k (PLAN.md §14).
   - Keep the AMG hierarchy alive in the bridge (create / solve / destroy) so that load

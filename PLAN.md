@@ -133,6 +133,8 @@ GcodeFem/
                         assembly, BCs, stress recovery, adaptive loop, ILinearSolver
       Failure/          criteria, safety factor, weakest-point search
       Study/            project file, load cases, orientation runs, comparison
+      Visual/           what the viewer draws, as plain arrays: beads, cell faces, element
+                        outlines, colours and legends (no UI types, so it is unit-tested)
     GcodeFem.App/       net10.0-windows WPF — views, viewport, view models
     GcodeFem.Cli/       net10.0 console — whole loop headless (batch sweeps, testing)
   native/
@@ -163,6 +165,8 @@ Getting the frames right once avoids a whole class of bugs later.
   mesh.
 - The **FEM is solved in the print frame**, where layers are horizontal and line up with
   the cell grid. Loads are rotated in by R, and results are rotated back for display.
+  - Until orientations are compared (M9) the viewer shows the print frame itself: the part
+    as it lies on the bed, Z up (§12).
 
 Units: mm, N, MPa (= N/mm²), s, °C everywhere.
 
@@ -586,6 +590,65 @@ Tabs: **Model & Interfaces · Toolpaths · Cells · Results · Compare**
 - Octree overlay: element size per region and refinement pass, so it's visible where the
   solver looked closely.
 
+### What M4 built
+
+One viewport with four views (Model · Toolpaths · Cells · Results) and a layer range that
+applies to the last three. Everything is drawn in the print frame, on a 10 mm grid at the
+height of the bed.
+
+| View | Shows | Notes |
+| --- | --- | --- |
+| Model | the STL, turned by the rotation fields as they are typed | |
+| Toolpaths | every bead at its real width and height, coloured by line type, nozzle temperature, fan, speed, time or width | Line types can be switched off one by one. Above 400k beads, or on request, plain lines instead. |
+| Cells | the bead cells, coloured by fill φ | Line direction, feature and bond factor come with M7. |
+| Results | von Mises, displacement, stress across the layers (σzz) or element size, on the deformed shape | Selecting a row of the pass table shows the mesh and the stresses as they were after that pass. |
+
+- **The load case is still the stand-in** from the CLI: clamp one side of the printed part,
+  spread a force over the opposite side. Interfaces replace it in M5.
+- **Only faces that outside air can reach are drawn.** A flood fill from outside the shown
+  range finds them. A whole part is then little more than its skin, and a layer range that
+  cuts it open shows the infill behind the cut. Measured on the 80 mm bracket (574k cells):
+  318k faces for layers 1–50, built in 0.1 s; the results view with deformation and
+  outlines in 0.5 s.
+- **A bead is a tube with a diamond cross-section**, shaded round, with pointed ends that
+  reach half a line width beyond the nozzle's path. Ten vertices per bead; neighbouring
+  lines stay visibly apart and corners close.
+- **Element outlines** are drawn for elements of 4³ cells and up, and only along material.
+  Outlines of 2³-cell elements lie too close together and grey out the part; lines through
+  infill voids hide what is behind them.
+- **The result must say when it is optimistic** (§7.4): if the peak still sits in a coarse
+  element, or a pass did not converge, a warning stands next to the numbers.
+- The top of the colour scale can be pulled below the peak, because the peak is usually one
+  sharp corner at the clamp and would leave the rest of the part dark.
+
+**Colours** follow one rule set, checked with a palette validator for the dark viewport:
+
+- A magnitude (stress, displacement, fill, speed) gets one hue, dark for low and light for
+  high. Lightness carries the value, so it reads without colour vision. No rainbow: its
+  lightness goes up and down and invents boundaries that are not in the data.
+- A signed value (σzz) gets blue for negative, red for positive and grey at zero.
+- Line types get eight fixed hues in a fixed order, plus grey for lines that are not part
+  of the model. Both bridge types share one hue and the rare part features share the last.
+  Eight hues side by side cannot all be told apart (orange and red, and magenta and aqua
+  for colour-blind readers), which is why single line types can be switched off.
+- The lighting adds no colour of its own: a white light at the camera, a weaker one from
+  above, and no ambient or specular share. A face is dimmed by its angle to the light,
+  never tinted, and whatever is in view is lit.
+
+**Scripted runs.** The app takes the whole job on its command line and can save a
+screenshot and exit, which is how the views were checked:
+
+```text
+GcodeFem.App model.stl --view results --fix xmin --force 0,0,-20 --screenshot out.png
+```
+
+`StartupOptions` lists the options (rotation, presets, view, colouring, layer range, pass,
+camera direction).
+
+Still to come: line-direction glyphs, feature and bond colouring of cells (M7), safety
+factor, probe and weakest-spot marker (M8), cuts other than by layer, the part frame and
+the Compare tab (M9), and cancelling a running solve.
+
 ---
 
 ## 13. Milestones
@@ -600,7 +663,7 @@ that comes early.
 | M1 | **Slice & parse**: read the current Bambu selection, filament list, CLI runner with timeout and log capture, rotated-STL writer, `result.json` → placement, G-code parser incl. per-segment deposition time | `gcodefem slice model.stl --rot 0,90,0 --filament "eSun PLA+"` prints layer and feature stats; parser tests run on the cube fixture. **Done 2026-10-05.** |
 | M2 | **Solver core**: block-sparse bead-cell voxelizer (φ only, isotropic), H8 assembly, C# PCG + AmgclBridge DLL, uniform bead-resolution solve | cantilever within a few % of beam theory; DOF vs time vs memory measured; this solve becomes the **reference** for M3. **Done 2026-10-05:** cantilever 1.5–2.5 % of Timoshenko, measurements in §6 and §7.1. |
 | M3 | **Octree adaptivity**: forest of root blocks, Galerkin coarsening, 2:1 balance, hanging-node constraints, downscaling, mark/refine/re-solve loop, RAM-based L suggestion | adaptive min SF (isotropic von Mises for now) within 5 % of the M2 reference using a fraction of its DOF; time per pass and coarse-level bias measured; defaults for L and k chosen. **Done 2026-10-06:** peak within 5 % on every part tried, with 20–67 % of the DOF; k = 2 and L = 3 kept, L = 0 for small parts; measurements in §7.2. The solver had to move to double precision on the way (§7.1). |
-| M4 | **Viewer**: model, toolpaths with layer slider, cells, octree overlay, result colouring | cube toolpaths coloured by feature; cantilever result and refinement shown |
+| M4 | **Viewer**: model, toolpaths with layer slider, cells, octree overlay, result colouring | cube toolpaths coloured by feature; cantilever result and refinement shown. **Done 2026-10-07:** both shown, plus the cells view, the deformed shape and a pass-by-pass view of the refinement; details in §12. |
 | M5 | **Interfaces & loads editor**: picking, region growing, glyphs, load cases, project save/load | define a bracket's bolt holes + force in the UI and solve |
 | M6 | **Materials & TDS**: JSON DB, Bambu TDS import, filament → material mapping | PLA Basic + PETG HF generated from their PDFs with sources |
 | M7 | **Print-aware material**: line directions, orthotropy, feature classes, bond factor from temps and time gaps | flat vs upright bar shows the TDS XY/Z ratio |

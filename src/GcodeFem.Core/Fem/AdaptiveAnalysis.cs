@@ -15,6 +15,7 @@ namespace GcodeFem.Core.Fem;
 /// <param name="EnergyFraction">Share of the strain energy that must sit in elements of at most 2³ cells: the coarser leaves holding the most energy are refined until it does. 0 turns it off.</param>
 /// <param name="ConvergedChange">Stop once the peak sits in bead-resolution cells and the last pass moved the stress there by less than this fraction.</param>
 /// <param name="MaxDofs">A refinement that would exceed this is not solved; null derives it from free memory.</param>
+/// <param name="KeepPassFields">Keep every pass's element levels and stresses per cell, for a viewer to step through; 5 bytes per cell and pass.</param>
 public sealed record AdaptiveOptions(
     int? RootLevel = null,
     double RefineFactor = 2,
@@ -26,7 +27,8 @@ public sealed record AdaptiveOptions(
     int? MaxDofs = null,
     float MinFill = 0.05f,
     double Tolerance = 1e-8,
-    int MaxIterations = 50_000);
+    int MaxIterations = 50_000,
+    bool KeepPassFields = false);
 
 /// <param name="LeavesByLevel">Elements per level, bead cells first.</param>
 /// <param name="PeakCell">Bead cell with the highest von Mises stress, and <paramref name="PeakLevel"/> the level of its leaf.</param>
@@ -49,6 +51,12 @@ public sealed record AdaptivePass(
 {
     public int Leaves => LeavesByLevel.Sum();
     public TimeSpan Time => BuildTime + Solve.Setup + Solve.Solve + StressTime;
+
+    /// <summary>Per bead cell: the level of its element in this pass. Only with <see cref="AdaptiveOptions.KeepPassFields"/>.</summary>
+    public byte[]? CellLevels { get; init; }
+
+    /// <summary>Per bead cell: its von Mises stress as this pass saw it. Only with <see cref="AdaptiveOptions.KeepPassFields"/>.</summary>
+    public float[]? VonMises { get; init; }
 }
 
 public sealed class AdaptiveResult
@@ -146,7 +154,11 @@ public static class AdaptiveAnalysis
 
             var settled = last is not null && Settled(last.VonMises, vonMises, passes[^1].PeakCell, peak, octree, options.ConvergedChange);
             passes.Add(new AdaptivePass(passes.Count, octree.LeavesByLevel(), octree.Dofs, octree.HangingCount, vonMises[peak], peak,
-                octree.Leaves[octree.CellLeaf[peak]].Level, compliance, marked.Count, statistics, buildTime, watch.Elapsed));
+                octree.Leaves[octree.CellLeaf[peak]].Level, compliance, marked.Count, statistics, buildTime, watch.Elapsed)
+            {
+                CellLevels = options.KeepPassFields ? octree.CellLevels() : null,
+                VonMises = options.KeepPassFields ? vonMises : null,
+            });
             last = new Solved(octree, nodeDisplacements, stress, vonMises);
             onPass?.Invoke(passes[^1]);
 

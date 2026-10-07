@@ -41,6 +41,7 @@ static int Usage()
           gcodefem bench [--scales 2,4,6,8] [--solver both|amg|pcg] [--pcg-max-dofs 300000]
           gcodefem bench --adaptive [--scales 2,4,6,8] [octree options] [--verbose]
           gcodefem sample bracket <out.stl> [--leg 40] [--width 10] [--height 8]
+          gcodefem sample beam <out.stl> [--length 60] [--width 10] [--height 10]
 
         slice options:  --rot x,y,z (degrees, about X then Y then Z) --filament <name> --process <name> --machine <name>
                         Machine, process and filament default to the current Bambu Studio selection.

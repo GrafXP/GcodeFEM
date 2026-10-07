@@ -155,6 +155,14 @@ public sealed class OctreeMesh
         return counts;
     }
 
+    /// <summary>Per bead cell: the level of the leaf it lies in (0 = the cell is its own element).</summary>
+    public byte[] CellLevels()
+    {
+        var levels = new byte[CellLeaf.Length];
+        for (var e = 0; e < levels.Length; e++) levels[e] = (byte)Leaves[CellLeaf[e]].Level;
+        return levels;
+    }
+
     public (int I, int J, int K) NodeGrid(int node)
     {
         var key = nodeKeys[node];

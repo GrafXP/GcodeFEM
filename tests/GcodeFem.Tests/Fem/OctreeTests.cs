@@ -200,6 +200,25 @@ public class OctreeTests
         Assert.True(adaptive.Final.Compliance <= exact * (1 + 1e-6));
     }
 
+    [Fact]
+    public void Kept_pass_fields_trace_the_refinement()
+    {
+        var grid = CellGrid.Solid(60, 8, 16, Pitch, Layer);
+        var bounds = new Box3(Vector3.Zero, new Vector3(60 * Pitch, 8 * Pitch, 16 * Layer));
+        var loadCase = LoadCase.ClampAndPush(bounds, Axis.X, fixMax: false, new Vector3(0, 0, -1));
+        var mesh = FemMesh.Build(grid, 0.05f, loadCase.Fixtures);
+
+        var adaptive = AdaptiveAnalysis.Run(mesh, Material, loadCase, LinearSolvers.Best(), new AdaptiveOptions(RootLevel: 3, KeepPassFields: true));
+
+        Assert.All(adaptive.Passes[0].CellLevels!, level => Assert.Equal(3, level));
+        for (var p = 1; p < adaptive.Passes.Count; p++)
+        for (var e = 0; e < mesh.Cells.Length; e++)
+            Assert.True(adaptive.Passes[p].CellLevels![e] <= adaptive.Passes[p - 1].CellLevels![e], $"cell {e} got coarser in pass {p}");
+        Assert.Equal(adaptive.Octree.CellLevels(), adaptive.Final.CellLevels);
+        Assert.Same(adaptive.VonMises, adaptive.Final.VonMises);
+        Assert.All(adaptive.Passes, pass => Assert.Equal(pass.MaxVonMises, pass.VonMises!.Max()));
+    }
+
     [AmgclFact]
     public void Adaptive_cantilever_finds_the_reference_peak_with_fewer_unknowns()
     {

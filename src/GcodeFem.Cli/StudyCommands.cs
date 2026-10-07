@@ -27,6 +27,15 @@ static class StudyCommands
             Filament = commandLine.Option("filament"),
             MeshLevel = commandLine.Option("level") is { } level and not "auto" ? int.Parse(level) : null,
         };
+        if (commandLine.Option("lay") is { } point)
+        {
+            // The face at that point of the model goes on the bed, by the shortest way from --rot.
+            var mesh = Stl.Read(model);
+            var (triangle, distance) = MeshPicker.Nearest(mesh, Text.Triple(point, "lay"));
+            if (distance > 0.5f) throw new ArgumentException($"--lay {point} is {distance:0.##} mm off the model's surface.");
+            var current = Orientation.FromEulerDegrees(study.Rotation.X, study.Rotation.Y, study.Rotation.Z);
+            study.Rotation = Orientation.LayFlat(current, FaceRegions.FlatNormal(mesh, MeshTopology.Of(mesh), triangle));
+        }
         study.LoadCases.Add(new StudyLoadCase { Name = commandLine.Option("case") ?? "Load case 1" });
         StudyFile.Save(study, commandLine.Positional[1]);
         return Show(commandLine.Positional[1]);

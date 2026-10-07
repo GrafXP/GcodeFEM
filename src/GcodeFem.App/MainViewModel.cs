@@ -312,7 +312,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     partial void OnRotationZChanged(double value) => OnRotationChanged();
     partial void OnViewChanged(ViewMode value)
     {
-        if (value != ViewMode.Model) IsPicking = false; // faces are picked on the model only
+        if (value != ViewMode.Model) IsPicking = IsPlacing = false; // faces are picked on the model only
         Redraw();
     }
 
@@ -408,7 +408,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
         var size = mesh.Bounds.Size;
         ModelName = $"{Path.GetFileName(path)}: {mesh.TriangleCount:N0} triangles, {size.X:0.##} x {size.Y:0.##} x {size.Z:0.##} mm";
-        Status = "Model loaded. Add its mounts and loads, and slice it to see the toolpaths.";
+        Status = "Model loaded. Lay it on the face it is to be printed on, add its mounts and loads, and slice it.";
         FitRequested?.Invoke(mesh.Transformed(Rotation).Bounds);
         Redraw();
     }

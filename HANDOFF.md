@@ -320,6 +320,41 @@ Read [PLAN.md](PLAN.md) for the design. This file only tracks where things stand
   | A pin alone is refused: "free to slide along Z" | a study with `study add … --kind bolthole --free-along` |
   | The old stand-in, as two interfaces | `GcodeFem.App samples\beam60.stl --view results --fix xmin --force 0,0,-20` |
 
+### After M5: lay a face on the bed
+- Martin asked for it: the model has to be placed before anything else, as in the slicer,
+  by picking the face that goes on the bed.
+- `Orientation.LayFlat(current, normal)` gives the three rotation angles;
+  `Orientation.ToEulerDegrees` reads angles back off a rotation; `FaceRegions.FlatNormal`
+  is the direction of the flat face around a triangle. PLAN.md §10 says how the angles
+  are found and why the face ends up exactly flat.
+- App: "Lay a face on the bed" at the top of the Print panel, then a click on the model.
+  It is a one-shot: the button comes up again after the click. Scripted: `--lay "x,y"`.
+- CLI: `gcodefem study new … --lay x,y,z`.
+- Tests: 156 green (15 new, on the angles).
+- Checked in the app on the bracket: a click on its long side gives rotation 90, 0, 0 and
+  one on its end 0, 90, 0, with the bolt holes and the tip force turned along
+  (`GcodeFem.App --study samples\bracket40_holes.study.json --lay "700,560"`).
+
+### Seen once: the test host crashed in the native solver
+- In a window of about ten minutes, 5 of 10 full test runs went wrong: four ended with
+  the test host crashing (0xC0000005 inside `AmgclSolver.SolveElasticity`, in
+  `VoxelizerTests.The_printed_cube_carries_a_load`, a second or two into the run), and
+  in one `OctreeTests.Adaptive_cantilever_finds_the_reference_peak_with_fewer_unknowns`
+  got NaN from its reference solve.
+- **It did not come back and the cause is not known.** Straight after, 32 full runs were
+  clean: 8 each of the M4 commit, the M5 commit and the code as it is now, and 8 more of
+  the latter through the solution file, which is how the bad runs had been started. The
+  binaries that crashed are the ones that then passed. The crashing test on its own
+  passed 6 of 6 right after the bad runs.
+- Free commit was 11–12 GB of 34 GB whenever it was looked at, during and after. That is
+  not short, but it is only what was seen between runs. An access violation in the
+  native solver is what running out of memory there looks like (session 2), and other
+  programs were in use on the desktop at the time. This is the likeliest explanation and
+  it is not shown.
+- If it comes back: note the free commit at that moment, and check what the solver is
+  handed (columns in range, no NaN in the matrix or the load) before the native call, so
+  that bad input can be ruled out or caught.
+
 ### What M5 found
 - **An interface follows the print where it steps back from the model.** On the beam the
   first layer's corners are rounded, so two corner cells are missing. The stand-in clamps

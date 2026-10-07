@@ -75,6 +75,17 @@ public static class FaceRegions
         return [.. region.Order()];
     }
 
+    /// <summary>
+    /// The outward direction of the flat face that <paramref name="triangle"/> is part of: the
+    /// normals of the triangles lying in one plane with it (within a degree), averaged by area, so
+    /// that one badly shaped triangle does not tilt it.
+    /// </summary>
+    public static Vector3 FlatNormal(TriangleMesh mesh, MeshTopology topology, int triangle)
+    {
+        var normal = new SurfacePatch(mesh, Grow(mesh, topology, triangle, maxAngleDegrees: 1)).MeanNormal;
+        return normal.Length() > 0.5f ? Vector3.Normalize(normal) : mesh.Normal(triangle);
+    }
+
     /// <summary>The triangles lying in the plane <paramref name="normal"/> · p = <paramref name="offset"/>, such as one side of the model's bounding box. Ascending.</summary>
     public static int[] OnPlane(TriangleMesh mesh, Vector3 normal, float offset, float tolerance = 1e-3f)
     {

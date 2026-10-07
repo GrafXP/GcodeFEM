@@ -57,20 +57,24 @@
                             <RowDefinition />
                             <RowDefinition />
                             <RowDefinition />
+                            <RowDefinition />
                         </Grid.RowDefinitions>
-                        <TextBlock Text="Rotation" Style="{StaticResource Label}" ToolTip="Degrees about X, then Y, then Z" />
-                        <UniformGrid Grid.Column="1" Columns="3" Style="{StaticResource Field}" ToolTip="Degrees about X, then Y, then Z">
+                        <TextBlock Text="Lies on" Style="{StaticResource Label}" />
+                        <ToggleButton Grid.Column="1" Content="Lay a face on the bed" IsChecked="{Binding IsPlacing}" Padding="8,3" Style="{StaticResource Field}"
+                                      ToolTip="Then click the face of the model that is to lie on the bed. The model turns the shortest way to get it there, and its mounts and loads turn with it." />
+                        <TextBlock Grid.Row="1" Text="Rotation" Style="{StaticResource Label}" ToolTip="Degrees about X, then Y, then Z" />
+                        <UniformGrid Grid.Row="1" Grid.Column="1" Columns="3" Style="{StaticResource Field}" ToolTip="Degrees about X, then Y, then Z. Laying a face on the bed sets them; they can also be typed.">
                             <TextBox Text="{Binding RotationX}" Margin="0,0,4,0" />
                             <TextBox Text="{Binding RotationY}" Margin="0,0,4,0" />
                             <TextBox Text="{Binding RotationZ}" />
                         </UniformGrid>
-                        <TextBlock Grid.Row="1" Text="Printer" Style="{StaticResource Label}" />
-                        <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding Printer}" TextWrapping="Wrap" Style="{StaticResource Field}" />
-                        <TextBlock Grid.Row="2" Text="Process" Style="{StaticResource Label}" />
-                        <ComboBox Grid.Row="2" Grid.Column="1" ItemsSource="{Binding Processes}" SelectedItem="{Binding Process}" Style="{StaticResource Field}" />
-                        <TextBlock Grid.Row="3" Text="Filament" Style="{StaticResource Label}" />
-                        <ComboBox Grid.Row="3" Grid.Column="1" ItemsSource="{Binding Filaments}" SelectedItem="{Binding Filament}" Style="{StaticResource Field}" />
-                        <Button Grid.Row="4" Grid.Column="1" Content="Slice" Command="{Binding SliceCommand}" Padding="10,4" Margin="0,6,0,2" HorizontalAlignment="Left" />
+                        <TextBlock Grid.Row="2" Text="Printer" Style="{StaticResource Label}" />
+                        <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding Printer}" TextWrapping="Wrap" Style="{StaticResource Field}" />
+                        <TextBlock Grid.Row="3" Text="Process" Style="{StaticResource Label}" />
+                        <ComboBox Grid.Row="3" Grid.Column="1" ItemsSource="{Binding Processes}" SelectedItem="{Binding Process}" Style="{StaticResource Field}" />
+                        <TextBlock Grid.Row="4" Text="Filament" Style="{StaticResource Label}" />
+                        <ComboBox Grid.Row="4" Grid.Column="1" ItemsSource="{Binding Filaments}" SelectedItem="{Binding Filament}" Style="{StaticResource Field}" />
+                        <Button Grid.Row="5" Grid.Column="1" Content="Slice" Command="{Binding SliceCommand}" Padding="10,4" Margin="0,6,0,2" HorizontalAlignment="Left" />
                     </Grid>
                 </GroupBox>
 
@@ -248,6 +252,9 @@
                         <Style TargetType="hx:Viewport3DX">
                             <Style.Triggers>
                                 <DataTrigger Binding="{Binding IsPicking}" Value="True">
+                                    <Setter Property="Cursor" Value="Cross" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding IsPlacing}" Value="True">
                                     <Setter Property="Cursor" Value="Cross" />
                                 </DataTrigger>
                             </Style.Triggers>

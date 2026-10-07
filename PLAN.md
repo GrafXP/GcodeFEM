@@ -621,6 +621,21 @@ faces each interface held or loaded, and with what force.
 face, and `solve` and `adapt` take `--study file [--case name]`. The whole loop still
 runs without the app.
 
+**Placing the model first.** "Lay a face on the bed" in the Print panel works like the
+slicer's: click a face of the model and the model turns until that face points straight
+down. Of all the turns that do that, it takes the shortest from how the model lies now, so
+a part that is nearly right is only tipped, not spun round. The three rotation fields
+show the result and can still be typed into. The interfaces are faces of the part, so
+they turn with it, and it does not matter whether the model is placed before or after
+they are picked. In the CLI it is `study new … --lay x,y,z`, with a point on the face.
+
+- X and Y of the rotation alone decide whether the face lies flat, and they follow from
+  the face's normal directly: X = atan2(−n.y, −n.z), Y = atan2(n.x, √(n.y² + n.z²)). Only Z,
+  the spin on the bed, is read off the matrix of the shortest turn. So flat is exact to
+  the rounding of the fields (a ten-thousandth of a degree), also near Y = ±90°, where
+  angles taken from a matrix lose their accuracy.
+- The face is the flat face around the clicked triangle, its normal averaged by area.
+
 Left for later: elastic supports, torque, gravity (it needs a density, which comes with
 the materials in M6), and solving several load cases on one matrix.
 

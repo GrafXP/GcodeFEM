@@ -104,7 +104,7 @@ public partial class MainWindow : Window
     /// <param name="at">In the viewport's own coordinates.</param>
     void PickAt(Point at)
     {
-        if (!viewModel.IsPicking) return;
+        if (!viewModel.IsPicking && !viewModel.IsPlacing) return;
         var ray = Viewport.UnProject(at);
         viewModel.Pick(ray.Position, ray.Direction);
     }
@@ -186,23 +186,39 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Clicks on the model as the mouse would, at the points of --click "x,y;x,y": pixels of a
+    /// Clicks on the model as the mouse would: --lay "x,y" lays the face there on the bed, then
+    /// --click "x,y;x,y" picks faces for the selected interface. The points are pixels of a
     /// screenshot of this window, which is where one reads them off.
     /// </summary>
     async Task ClickAsync()
     {
-        if (options.Text("click") is not { } clicks) return;
-        while (!viewModel.SceneReady.IsCompleted) await viewModel.SceneReady;
-        await Task.Delay(TimeSpan.FromSeconds(1)); // the camera must have been through a frame for the ray to come out right
-        viewModel.IsPicking = true;
-        var dpi = VisualTreeHelper.GetDpi(this);
-        foreach (var click in clicks.Split(';', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+        if (options.Text("lay") is { } face)
         {
-            if (click.Split(',') is not [var x, var y]) throw new FormatException($"--click expects x,y but got '{click}'.");
-            var inContent = new Point(double.Parse(x, CultureInfo.InvariantCulture) / dpi.DpiScaleX, double.Parse(y, CultureInfo.InvariantCulture) / dpi.DpiScaleY);
-            PickAt(((UIElement)Content).TranslatePoint(inContent, Viewport));
+            await CameraReady();
+            viewModel.IsPlacing = true;
+            PickAt(InViewport(face, "lay"));
         }
+        if (options.Text("click") is not { } clicks) return;
+        await CameraReady();
+        viewModel.IsPicking = true;
+        foreach (var click in clicks.Split(';', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)) PickAt(InViewport(click, "click"));
         viewModel.IsPicking = false;
+    }
+
+    /// <summary>The camera must have been through a frame with the scene as it is for a ray to come out right.</summary>
+    async Task CameraReady()
+    {
+        while (!viewModel.SceneReady.IsCompleted) await viewModel.SceneReady;
+        await Task.Delay(TimeSpan.FromSeconds(1));
+    }
+
+    /// <summary>"x,y" in pixels of a screenshot → the same spot in the viewport's own coordinates.</summary>
+    Point InViewport(string pixel, string option)
+    {
+        if (pixel.Split(',') is not [var x, var y]) throw new FormatException($"--{option} expects x,y but got '{pixel}'.");
+        var dpi = VisualTreeHelper.GetDpi(this);
+        var inContent = new Point(double.Parse(x, CultureInfo.InvariantCulture) / dpi.DpiScaleX, double.Parse(y, CultureInfo.InvariantCulture) / dpi.DpiScaleY);
+        return ((UIElement)Content).TranslatePoint(inContent, Viewport);
     }
 
     void ApplyView(ViewMode view)

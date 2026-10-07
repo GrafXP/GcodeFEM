@@ -42,7 +42,7 @@ static int Usage()
           gcodefem bench [--scales 2,4,6,8] [--solver both|amg|pcg] [--pcg-max-dofs 300000]
           gcodefem bench --adaptive [--scales 2,4,6,8] [octree options] [--verbose]
           gcodefem solve|adapt --study <study.json> [--case <name>] [...]
-          gcodefem study new <study.json> <model.stl> [slice options] [--level auto|0..5] [--case <name>]
+          gcodefem study new <study.json> <model.stl> [slice options] [--lay x,y,z] [--level auto|0..5] [--case <name>]
           gcodefem study add <study.json> --name <name> [--kind fixed|sliding|bolthole|force|pressure|bearing] [--at "x,y,z;x,y,z"]
                              [--angle 20] [--free-along] [--case <name>] [--force x,y,z | --normal-force n | --pressure p]
           gcodefem study show <study.json>
@@ -58,6 +58,7 @@ static int Usage()
                         Coarse elements hold (2^level)^3 cells; cells stressed above peak / k end up at bead resolution.
 
         A study holds the model, how it is printed, its interfaces (the faces where it is held or loaded) and load cases.
+        study new --lay turns the model so that its face at that point (model coordinates) lies on the bed.
         study add picks the face at each --at point (model coordinates; the face runs on while neighbouring facets differ
         by under --angle degrees) and adds it to the interface, or sets the interface's value in a load case. Forces are
         in the model's own directions; --normal-force and --pressure push onto the face. A bolt hole is held across

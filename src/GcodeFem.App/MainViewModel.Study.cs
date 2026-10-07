@@ -257,8 +257,40 @@ public sealed partial class MainViewModel
             IsPicking = false;
             return;
         }
+        IsPlacing = false; // a click means one thing at a time
         View = ViewMode.Model; // faces are picked on the model
         Status = $"Click a face of the model to add it to '{item.Name}'; click it again to take it off.";
+    }
+
+    /// <summary>While on, the next click on the model lays the face under it on the bed.</summary>
+    [ObservableProperty]
+    public partial bool IsPlacing { get; set; }
+
+    partial void OnIsPlacingChanged(bool value)
+    {
+        if (!value) return;
+        if (Part is null)
+        {
+            IsPlacing = false;
+            return;
+        }
+        IsPicking = false;
+        View = ViewMode.Model;
+        Status = "Click the face of the model that is to lie on the bed.";
+    }
+
+    /// <summary>
+    /// Turns the part so that the face a ray meets lies on the bed, by the shortest way from how
+    /// it lies now. The interfaces are faces of the part and turn with it.
+    /// </summary>
+    void LayOnBed(TriangleMesh part, Vector3 origin, Vector3 direction)
+    {
+        if (MeshPicker.Pick(part.Transformed(Rotation), origin, direction) is not { } hit) return;
+        var angles = Orientation.LayFlat(Rotation, FaceRegions.FlatNormal(part, topology ??= MeshTopology.Of(part), hit.Triangle));
+        IsPlacing = false;
+        // Through double, 35.2644 would show as 35.26440048217773.
+        (RotationX, RotationY, RotationZ) = (Math.Round(angles.X, 4), Math.Round(angles.Y, 4), Math.Round(angles.Z, 4));
+        Status = $"Laid that face on the bed: rotation {RotationX:0.####}, {RotationY:0.####}, {RotationZ:0.####}." + (HasPrint ? " Slice again to print it this way." : "");
     }
 
     // ---- interfaces ----
@@ -316,12 +348,19 @@ public sealed partial class MainViewModel
     }
 
     /// <summary>
-    /// A click on the model view, as a ray in the print frame: the face it meets is added to the
-    /// selected interface, or taken off if it was part of it.
+    /// A click on the model view, as a ray in the print frame. While placing, the face it meets is
+    /// laid on the bed; while picking, it is added to the selected interface, or taken off if it
+    /// was part of it.
     /// </summary>
     public void Pick(Vector3 origin, Vector3 direction)
     {
-        if (!IsPicking || View != ViewMode.Model || Part is not { } part || SelectedInterface is not { } item) return;
+        if (View != ViewMode.Model || Part is not { } part) return;
+        if (IsPlacing)
+        {
+            LayOnBed(part, origin, direction);
+            return;
+        }
+        if (!IsPicking || SelectedInterface is not { } item) return;
         // The model is shown turned for printing; its triangles are numbered as in the part.
         if (MeshPicker.Pick(part.Transformed(Rotation), origin, direction) is not { } hit) return;
 
@@ -392,7 +431,7 @@ public sealed partial class MainViewModel
         foreach (var item in Interfaces) item.PropertyChanged -= OnInterfaceChanged;
         Interfaces.Clear();
         SelectedInterface = null;
-        IsPicking = false;
+        IsPicking = IsPlacing = false;
         LoadCases.Clear();
         LoadCases.Add(new LoadCaseItem("Load case 1"));
         SelectedLoadCase = LoadCases[0];

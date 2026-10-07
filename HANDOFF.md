@@ -349,6 +349,27 @@ Read [PLAN.md](PLAN.md) for the design. This file only tracks where things stand
   (`GcodeFem.App --study … --rot 90,0,0 --select Tip --value "0, 0, -20" --save-study out.study.json`).
 - No change in Core; 156 tests green.
 
+### After M5: the middle mouse button pans
+- Martin asked for it. One `MouseBinding` on the viewport in `MainWindow.xaml` sends a
+  middle click to Helix's pan command.
+- Helix's own gestures stay as they are; listed once from the running app:
+
+  | Mouse | Does |
+  | --- | --- |
+  | right button | turn |
+  | middle button (new), or Shift + right | pan |
+  | wheel, or Ctrl + right | zoom |
+  | Ctrl + Shift + right | zoom to a rectangle |
+  | Alt + right | field of view |
+  | Ctrl + right double click | set what the camera turns about |
+  | Ctrl + left double click, or Ctrl + E | fit the view |
+  | Ctrl + middle double click | reset the camera |
+  | left button | pick a face, while "Pick on the model" or "Lay a face on the bed" is on |
+
+- Checked by listing the viewport's bindings from the running app: the middle click goes
+  to the same command as Shift + right, and nothing else was bound to it. Not checked by
+  actually dragging: that needs a hand on the mouse.
+
 ### Seen once: the test host crashed in the native solver
 - In a window of about ten minutes, 5 of 10 full test runs went wrong: four ended with
   the test host crashing (0xC0000005 inside `AmgclSolver.SolveElasticity`, in

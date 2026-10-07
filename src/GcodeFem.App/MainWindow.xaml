@@ -248,6 +248,10 @@
                                 ShowCoordinateSystem="True"
                                 PreviewMouseLeftButtonDown="Viewport_MouseDown"
                                 PreviewMouseLeftButtonUp="Viewport_MouseUp">
+                    <hx:Viewport3DX.InputBindings>
+                        <!-- On top of Helix's own gestures (the right button turns, the wheel zooms): the middle button pans, as in the slicer. -->
+                        <MouseBinding Command="{x:Static hx:ViewportCommands.Pan}" Gesture="MiddleClick" />
+                    </hx:Viewport3DX.InputBindings>
                     <hx:Viewport3DX.Style>
                         <Style TargetType="hx:Viewport3DX">
                             <Style.Triggers>

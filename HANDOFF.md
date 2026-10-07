@@ -335,6 +335,20 @@ Read [PLAN.md](PLAN.md) for the design. This file only tracks where things stand
   one on its end 0, 90, 0, with the bolt holes and the tip force turned along
   (`GcodeFem.App --study samples\bracket40_holes.study.json --lay "700,560"`).
 
+### After M5: forces in the directions of the view
+- Martin found a force hard to line up once the part had been laid on a face: the field
+  took it in the model's own directions, while the view and its axes show the print's.
+- The value field of a force and of a bearing load now shows and takes X, Y, Z of the
+  print as the part is turned by the rotation fields. `InterfaceItem` still keeps the
+  force in the part's own directions (`Show(loadCase, partToPrint)`, `ToPart`), and so
+  do the study file and the CLI, so the force stays on the part when it is turned:
+  the arrow turns with it and the numbers in the field follow.
+- Checked on the bracket turned by 90, 0, 0: "Push down", stored as 0, 0, −10, shows as
+  0, 10, 0 with its arrow along the view's Y; typing 0, 0, −20 gives an arrow straight
+  down and is saved as 0, −20, 0
+  (`GcodeFem.App --study … --rot 90,0,0 --select Tip --value "0, 0, -20" --save-study out.study.json`).
+- No change in Core; 156 tests green.
+
 ### Seen once: the test host crashed in the native solver
 - In a window of about ten minutes, 5 of 10 full test runs went wrong: four ended with
   the test host crashing (0xC0000005 inside `AmgclSolver.SolveElasticity`, in

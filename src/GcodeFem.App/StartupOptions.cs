@@ -20,8 +20,9 @@ namespace GcodeFem.App;
 ///
 /// --fix and --force set up a quick load case: the model's face on that side of the print is fixed and the opposite
 /// one carries the force (N, in the print's directions). --add makes a new interface and --select picks an existing
-/// one; --name, --value and --click then apply to it. --click picks faces in the model view as the mouse would, at
-/// pixels read off a screenshot of the window; --lay lays the face at such a pixel on the bed first.
+/// one; --name, --value and --click then apply to it. --value is what would be typed into the value field: a force is
+/// in the print's directions as the part is turned by --rot. --click picks faces in the model view as the mouse
+/// would, at pixels read off a screenshot of the window; --lay lays the face at such a pixel on the bed first.
 /// With --screenshot the app saves the picture and exits; its exit code is 1 if a step failed.
 /// </summary>
 sealed class StartupOptions

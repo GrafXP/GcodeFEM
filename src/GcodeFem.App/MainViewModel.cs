@@ -341,6 +341,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     /// <summary>The model view previews the rotation as it is typed; the other views keep showing the last slice.</summary>
     void OnRotationChanged()
     {
+        // Forces are fixed to the part but read in the directions on screen, so their numbers follow the turn.
+        foreach (var item in Interfaces) item.Show(SelectedLoadCase, Rotation);
         if (View == ViewMode.Model && Part is { } part) FitRequested?.Invoke(part.Transformed(Rotation).Bounds);
         Redraw();
     }

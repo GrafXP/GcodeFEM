@@ -24,11 +24,14 @@ public sealed partial class LoadCaseItem(string name) : ObservableObject
 /// <summary>
 /// An interface as the editor shows it: its name, kind and faces, and its value in the load case
 /// that is selected. The value is edited as text, and kept per load case.
+/// A force is fixed to the part and kept in the part's own directions, but it is shown and typed
+/// in the directions of the view: those of the print as the part is turned now, Z up from the bed.
 /// </summary>
 public sealed partial class InterfaceItem : ObservableObject
 {
     readonly Dictionary<LoadCaseItem, LoadValue> values = [];
     LoadCaseItem? shown;
+    Matrix4x4 toPrint = Matrix4x4.Identity; // part frame → the print frame on screen
     bool refreshing;
 
     public InterfaceItem(string name, InterfaceKind kind) => (Name, Kind) = (name, kind);
@@ -91,10 +94,14 @@ public sealed partial class InterfaceItem : ObservableObject
     {
         InterfaceKind.Pressure => "Pressure onto the face in MPa (N/mm²). A negative value pulls.",
         InterfaceKind.Force when AlongNormal => "Newtons pushing onto the face along its normal. A negative value pulls.",
-        InterfaceKind.Bearing => "Newtons along X, Y and Z of the model as it was opened. The pin presses on the side of the hole it pushes against; what there is of the force along the hole is left out.",
-        _ => "Newtons along X, Y and Z of the model as it was opened: the force turns with the part when the part is turned for printing. It is spread evenly over the face.",
+        InterfaceKind.Bearing => "Newtons along X, Y and Z as the view shows them now: Z is up from the bed. The pin presses on the side of the hole it pushes against; " +
+                                 "what there is of the force along the hole is left out. " + Attached,
+        _ => "Newtons along X, Y and Z as the view shows them now: Z is up from the bed. The force is spread evenly over the face. " + Attached,
     };
 
+    const string Attached = "The force is fixed to the part: turn the part, and the force turns with it and these numbers change to match.";
+
+    /// <summary>The value in a load case; a force in it is in the part's own directions.</summary>
     public LoadValue Value(LoadCaseItem loadCase) => values.GetValueOrDefault(loadCase) ?? new LoadValue();
 
     public void SetValue(LoadCaseItem loadCase, LoadValue value)
@@ -105,10 +112,13 @@ public sealed partial class InterfaceItem : ObservableObject
 
     public void Forget(LoadCaseItem loadCase) => values.Remove(loadCase);
 
-    /// <summary>Makes <paramref name="loadCase"/> the one whose value is shown and edited.</summary>
-    public void Show(LoadCaseItem? loadCase)
+    /// <summary>
+    /// Makes <paramref name="loadCase"/> the one whose value is shown and edited, with a force given
+    /// in the print's directions for a part turned by <paramref name="partToPrint"/>.
+    /// </summary>
+    public void Show(LoadCaseItem? loadCase, Matrix4x4 partToPrint)
     {
-        shown = loadCase;
+        (shown, toPrint) = (loadCase, partToPrint);
         Refresh();
     }
 
@@ -141,8 +151,8 @@ public sealed partial class InterfaceItem : ObservableObject
             {
                 InterfaceKind.Pressure => current with { Pressure = Number(value) },
                 InterfaceKind.Force when AlongNormal => current with { NormalForce = Number(value) },
-                InterfaceKind.Force => current with { Force = MainViewModel.ParseTriple(value), NormalForce = null },
-                InterfaceKind.Bearing => current with { Force = MainViewModel.ParseTriple(value) },
+                InterfaceKind.Force => current with { Force = ToPart(MainViewModel.ParseTriple(value)), NormalForce = null },
+                InterfaceKind.Bearing => current with { Force = ToPart(MainViewModel.ParseTriple(value)) },
                 _ => current,
             };
             ValueError = "";
@@ -153,24 +163,33 @@ public sealed partial class InterfaceItem : ObservableObject
         }
     }
 
+    /// <summary>A force as typed, in the print's directions → in the part's own. A rotation is undone by its transpose.</summary>
+    Vector3 ToPart(Vector3 inPrint) => Vector3.TransformNormal(inPrint, Matrix4x4.Transpose(toPrint));
+
     /// <summary>Brings the text and the tick box in line with the value held for the load case shown.</summary>
     void Refresh()
     {
         var value = shown is null ? new LoadValue() : Value(shown);
+        var force = Vector3.TransformNormal(value.Force, toPrint);
         refreshing = true;
         AlongNormal = Kind == InterfaceKind.Force && value.NormalForce is not null;
         ValueText = Kind switch
         {
             InterfaceKind.Pressure => Text(value.Pressure),
             InterfaceKind.Force when value.NormalForce is { } push => Text(push),
-            InterfaceKind.Force or InterfaceKind.Bearing => $"{Text(value.Force.X)}, {Text(value.Force.Y)}, {Text(value.Force.Z)}",
+            InterfaceKind.Force or InterfaceKind.Bearing => $"{Text(force.X)}, {Text(force.Y)}, {Text(force.Z)}",
             _ => "",
         };
         ValueError = "";
         refreshing = false;
     }
 
-    static string Text(float value) => value.ToString("0.####", CultureInfo.InvariantCulture);
+    /// <summary>Four decimals: what turning a force there and back leaves over is rounded away, and never shows as "-0".</summary>
+    static string Text(float value)
+    {
+        var text = value.ToString("0.####", CultureInfo.InvariantCulture);
+        return text == "-0" ? "0" : text;
+    }
 
     static float Number(string text) =>
         float.TryParse(text.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var value) ? value : throw new FormatException($"Expected a number like 12.5 but got '{text}'.");
@@ -239,7 +258,7 @@ public sealed partial class MainViewModel
 
     partial void OnSelectedLoadCaseChanged(LoadCaseItem? value)
     {
-        foreach (var item in Interfaces) item.Show(value);
+        foreach (var item in Interfaces) item.Show(value, Rotation);
         RedrawInterfaces();
     }
 
@@ -316,7 +335,7 @@ public sealed partial class MainViewModel
 
     InterfaceItem Insert(InterfaceItem item)
     {
-        item.Show(SelectedLoadCase);
+        item.Show(SelectedLoadCase, Rotation);
         item.PropertyChanged += OnInterfaceChanged;
         Interfaces.Add(item);
         return item;

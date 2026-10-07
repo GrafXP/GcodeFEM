@@ -599,8 +599,14 @@ face round the corner.
 - The axis and size of a hole come from the picked triangles themselves (`Cylinder.Fit`):
   the axis is the direction their normals have nothing of, the radius a circle through
   their corners seen along it. Two holes in one interface are fitted one by one.
-- A force is given in the model's own directions, or as one number pushing onto the face
-  along its normal. It is turned by R on its way to the solver.
+- A force is fixed to the part: it is kept in the model's own directions, in the study
+  file and in the CLI, and turned by R on its way to the solver. Or it is one number
+  pushing onto the face along its normal.
+  - **In the app a force is shown and typed in the directions of the view**: X, Y, Z of
+    the print as the part is turned now, Z up from the bed, which is what the axes in the
+    corner show. Typed in the model's own directions it could not be lined up with
+    anything on screen once the part had been laid on a face. Turning the part afterwards
+    turns the force with it, and the numbers in the field change to match.
 - **Mounts that do not hold the part are refused before the solve**, with the motion that
   is left: "free to slide along Z" for a pin alone, "free to turn about an axis along Y"
   for a hinge. A rigid motion is six numbers, and every held direction at a node rules

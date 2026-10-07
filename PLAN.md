@@ -557,6 +557,73 @@ Interfaces are the faces where the part mounts to or touches other parts.
   indices plus a geometry hash, so a changed STL is detected instead of silently
   mis-mapped.
 
+### What M5 built
+
+**Picking.** A click in the model view sends a ray into the model (`MeshPicker`). The
+triangle it meets grows into a face across shared edges for as long as the two triangles
+at an edge differ by less than a set angle, 20° by default (`FaceRegions.Grow`). That
+takes a flat face up to its edges and the wall of a 32-sided hole all the way round. A
+click on a face that is already picked takes it off again, so one interface can hold
+several faces (both bolt holes). Slivers, whose computed normal is noise, go with
+whatever they lie in.
+
+**A study** (`Core/Study`, saved as `*.study.json`) is the model, how it is printed
+(rotation, process, filament, mesh level), its interfaces and its load cases.
+
+- An interface is a name, a kind and the model's triangles that make it up. It belongs to
+  the part, so it stays put when the part is turned for printing.
+- **The mounts are the same in every load case; each load has a value per load case.**
+  That is what will let load cases share one matrix (§7.3). For now the app and the CLI
+  solve one load case at a time.
+- The file names the model relative to itself, stores faces as runs of triangle numbers
+  (`"40-103,180-243"`) and keeps the model's hash. When the hash no longer matches, the
+  interfaces keep their names, kinds and values but lose their faces, which have to be
+  picked again.
+
+**From the model's faces to the cells** (`InterfaceMapper`). The model's surface runs
+through or alongside the outermost cells, which follow it in steps. An interface takes the
+free cell faces that lie within 1.25 line widths of one of its triangles and face the same
+way as that triangle, even slightly: on a slanted face that is both kinds of step, on a
+round hole the steps all the way round. Faces square to the triangle belong to the next
+face round the corner.
+
+| Kind | On the cells | What the steps do to it |
+| --- | --- | --- |
+| Fixed | every corner of its cell faces is held in X, Y and Z | nothing |
+| Sliding | each cell face is held along its own normal | exact on a face that lies along the print's directions. On a slanted face the two kinds of step hold both ways, so it cannot slide there. |
+| Bolt hole | each cell face of the wall is held along its own normal, and along the hole's axis too if the bolt is done up tight | the steps round a hole face both ways, so the wall is held across the hole in every direction and cannot turn about the bolt either. A hole that is slanted in the print frame is held every way. Without "along the hole" it is a pin, and the part can slide along it. |
+| Force | the force is shared out over the cell faces, each weighted by how squarely it faces the model's surface | the weights add up to the face's own area, so the traction is even over the true face and the total is exact |
+| Pressure | on every cell face along its own normal | the steps' forces add up to exactly the pressure's force on the stepped surface |
+| Bearing load | pressure on the side of the wall that the pin pushes against, falling off as the cosine to nothing at the sides | the total is the force across the hole; what there is of it along the hole is left out, since a pin cannot push that way |
+
+- The axis and size of a hole come from the picked triangles themselves (`Cylinder.Fit`):
+  the axis is the direction their normals have nothing of, the radius a circle through
+  their corners seen along it. Two holes in one interface are fitted one by one.
+- A force is given in the model's own directions, or as one number pushing onto the face
+  along its normal. It is turned by R on its way to the solver.
+- **Mounts that do not hold the part are refused before the solve**, with the motion that
+  is left: "free to slide along Z" for a pin alone, "free to turn about an axis along Y"
+  for a hinge. A rigid motion is six numbers, and every held direction at a node rules
+  some of them out; if the 6 × 6 sum of these has a zero eigenvalue, something is left.
+  Without this check the solver would simply not converge.
+- Whatever an interface does not reach is named: an interface with no faces, a load case
+  with no load, a load whose faces have no printed cell near them.
+
+**In the app.** The left panel lists the interfaces (blue: held, orange: loaded), with an
+editor for the selected one and the load cases below. The model view tints their faces
+and marks them: cones standing on a mount's face, a rod along the axis of a bolt hole, an
+arrow for a force, small arrows for a pressure, an arrow at each mouth of a hole for a
+bearing load. The cells view can colour the cell faces by the interface that takes them,
+which shows what the solver will work with. After a solve the summary says how many cell
+faces each interface held or loaded, and with what force.
+
+**In the CLI.** `gcodefem study new|add|show` builds a study by naming a point on each
+face, and `solve` and `adapt` take `--study file [--case name]`. The whole loop still
+runs without the app.
+
+Left for later: elastic supports, torque, gravity (it needs a density, which comes with
+the materials in M6), and solving several load cases on one matrix.
+
 ---
 
 ## 11. Orientation loop
@@ -603,8 +670,9 @@ height of the bed.
 | Cells | the bead cells, coloured by fill φ | Line direction, feature and bond factor come with M7. |
 | Results | von Mises, displacement, stress across the layers (σzz) or element size, on the deformed shape | Selecting a row of the pass table shows the mesh and the stresses as they were after that pass. |
 
-- **The load case is still the stand-in** from the CLI: clamp one side of the printed part,
-  spread a force over the opposite side. Interfaces replace it in M5.
+- The load case was still the stand-in from the CLI: clamp one side of the printed part,
+  spread a force over the opposite side. Interfaces replaced it in M5 (§10); `--fix` and
+  `--force` on the app's command line now set up the same thing as two interfaces.
 - **Only faces that outside air can reach are drawn.** A flood fill from outside the shown
   range finds them. A whole part is then little more than its skin, and a layer range that
   cuts it open shows the infill behind the cut. Measured on the 80 mm bracket (574k cells):
@@ -643,7 +711,9 @@ GcodeFem.App model.stl --view results --fix xmin --force 0,0,-20 --screenshot ou
 ```
 
 `StartupOptions` lists the options (rotation, presets, view, colouring, layer range, pass,
-camera direction).
+camera direction). Since M5 it also opens a study (`--study`), adds or selects an
+interface, sets its value, and clicks on the model at pixels read off an earlier
+screenshot (`--click "640,420;757,490"`), which goes through the same code as the mouse.
 
 Still to come: line-direction glyphs, feature and bond colouring of cells (M7), safety
 factor, probe and weakest-spot marker (M8), cuts other than by layer, the part frame and
@@ -664,7 +734,7 @@ that comes early.
 | M2 | **Solver core**: block-sparse bead-cell voxelizer (φ only, isotropic), H8 assembly, C# PCG + AmgclBridge DLL, uniform bead-resolution solve | cantilever within a few % of beam theory; DOF vs time vs memory measured; this solve becomes the **reference** for M3. **Done 2026-10-05:** cantilever 1.5–2.5 % of Timoshenko, measurements in §6 and §7.1. |
 | M3 | **Octree adaptivity**: forest of root blocks, Galerkin coarsening, 2:1 balance, hanging-node constraints, downscaling, mark/refine/re-solve loop, RAM-based L suggestion | adaptive min SF (isotropic von Mises for now) within 5 % of the M2 reference using a fraction of its DOF; time per pass and coarse-level bias measured; defaults for L and k chosen. **Done 2026-10-06:** peak within 5 % on every part tried, with 20–67 % of the DOF; k = 2 and L = 3 kept, L = 0 for small parts; measurements in §7.2. The solver had to move to double precision on the way (§7.1). |
 | M4 | **Viewer**: model, toolpaths with layer slider, cells, octree overlay, result colouring | cube toolpaths coloured by feature; cantilever result and refinement shown. **Done 2026-10-07:** both shown, plus the cells view, the deformed shape and a pass-by-pass view of the refinement; details in §12. |
-| M5 | **Interfaces & loads editor**: picking, region growing, glyphs, load cases, project save/load | define a bracket's bolt holes + force in the UI and solve |
+| M5 | **Interfaces & loads editor**: picking, region growing, glyphs, load cases, project save/load | define a bracket's bolt holes + force in the UI and solve. **Done 2026-10-07:** the bracket with two bolt holes and a force on its tip is set up by clicking, saved as a study and solved, flat and standing on edge; details in §10. |
 | M6 | **Materials & TDS**: JSON DB, Bambu TDS import, filament → material mapping | PLA Basic + PETG HF generated from their PDFs with sources |
 | M7 | **Print-aware material**: line directions, orthotropy, feature classes, bond factor from temps and time gaps | flat vs upright bar shows the TDS XY/Z ratio |
 | M8 | **Failure & results**: criteria, SF, governing mode, weakest spot, deformed shape, probe. The refinement marking switches from von Mises to the real failure index. | bracket shows its weakest layer line and failure load |

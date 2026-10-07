@@ -105,7 +105,7 @@ public static class AdaptiveAnalysis
     public static AdaptiveResult Run(CellGrid grid, IsotropicMaterial material, LoadCase loadCase, ILinearSolver solver, AdaptiveOptions? options = null, Action<AdaptivePass>? onPass = null)
     {
         options ??= new AdaptiveOptions();
-        return Run(FemMesh.Build(grid, options.MinFill, loadCase.Fixtures), material, loadCase, solver, options, onPass);
+        return Run(FemMesh.Build(grid, options.MinFill, loadCase), material, loadCase, solver, options, onPass);
     }
 
     /// <summary>Runs on a mesh that is already built (with the load case's fixtures).</summary>

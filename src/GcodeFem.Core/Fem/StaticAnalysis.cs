@@ -52,7 +52,7 @@ public static class StaticAnalysis
     {
         options ??= new AnalysisOptions();
         var watch = Stopwatch.StartNew();
-        var mesh = FemMesh.Build(grid, options.MinFill, loadCase.Fixtures);
+        var mesh = FemMesh.Build(grid, options.MinFill, loadCase);
         return Run(mesh, material, loadCase, solver, options, watch.Elapsed);
     }
 

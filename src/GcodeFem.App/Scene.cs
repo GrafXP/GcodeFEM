@@ -4,6 +4,7 @@ using GcodeFem.Core.Fem;
 using GcodeFem.Core.Gcode;
 using GcodeFem.Core.Geometry;
 using GcodeFem.Core.Slicing;
+using GcodeFem.Core.Study;
 using GcodeFem.Core.Visual;
 using HelixToolkit;
 using HelixToolkit.Maths;
@@ -15,12 +16,16 @@ public enum ViewMode { Model, Toolpaths, Cells, Results }
 
 public enum ResultQuantity { VonMises, Displacement, InterlayerStress, ElementSize }
 
+/// <summary>What the cells view colours by: how full each cell is, or which interface its faces belong to.</summary>
+public enum CellColouring { Fill, Interfaces }
+
 /// <summary>What the viewport should show; a snapshot of the view settings taken when a redraw starts.</summary>
 /// <param name="LayerLow">First layer shown, and <paramref name="LayerHigh"/> the one after the last.</param>
 /// <param name="HiddenGroups">Bit per feature group of <see cref="ToolpathColours.Group"/> that is switched off.</param>
 /// <param name="ThinLines">Draw every bead as a plain line instead of a tube of its real size: far less to render.</param>
 /// <param name="ScaleTop">The colour scale ends at this fraction of the largest value, so a single sharp peak does not darken everything else.</param>
 /// <param name="Deformation">Factor on the displacements for the deformed shape; 0 draws the part as printed.</param>
+/// <param name="Marks">The interfaces, with their values in the load case shown.</param>
 sealed record ViewState(
     ViewMode Mode,
     int LayerLow,
@@ -32,7 +37,9 @@ sealed record ViewState(
     int Pass,
     float ScaleTop,
     float Deformation,
-    bool ShowElements);
+    bool ShowElements,
+    CellColouring CellColouring,
+    IReadOnlyList<InterfaceMark> Marks);
 
 /// <summary>One sliced orientation of the part with everything derived from it. The next slice replaces it as a whole.</summary>
 sealed class PrintJob
@@ -57,8 +64,11 @@ sealed class PrintJob
 /// <summary>A solve of a <see cref="PrintJob"/> and the fields the viewer colours and deforms with.</summary>
 sealed class SolvedJob
 {
-    public SolvedJob(AdaptiveResult result)
+    /// <param name="loadCase">The name of the load case that was solved.</param>
+    /// <param name="reach">What each interface got hold of on the cells.</param>
+    public SolvedJob(AdaptiveResult result, string loadCase, IReadOnlyList<InterfaceReach> reach)
     {
+        (LoadCaseName, Reach) = (loadCase, reach);
         Result = result;
         NodeDisplacements = ResultFields.NodeDisplacements(result);
         Displacement = ResultFields.DisplacementMagnitude(result.Mesh, NodeDisplacements);
@@ -68,6 +78,8 @@ sealed class SolvedJob
     }
 
     public AdaptiveResult Result { get; }
+    public string LoadCaseName { get; }
+    public IReadOnlyList<InterfaceReach> Reach { get; }
     public Vector3[] NodeDisplacements { get; }
     public float[] Displacement { get; }
     public float[] InterlayerStress { get; }
@@ -80,6 +92,7 @@ sealed class SolvedJob
 /// <summary>What one redraw produced; the parts that are not in the current view stay null.</summary>
 sealed record Scene(
     MeshGeometry3D? Model = null,
+    MeshGeometry3D? Glyphs = null,
     MeshGeometry3D? Beads = null,
     LineGeometry3D? BeadLines = null,
     MeshGeometry3D? Cells = null,
@@ -91,18 +104,34 @@ sealed record Scene(
 /// <summary>Turns the current view settings into Helix geometry. Runs off the UI thread, one build at a time.</summary>
 static class SceneBuilder
 {
+    /// <summary>Cell faces that belong to no interface: darker than the model's grey, so that those which do stand out.</summary>
+    static readonly Vector4 Unreached = Palette.Hex("#5a5a57");
+
+    static readonly LegendEntry[] InterfaceEntries = [new(0, "Held: a mount", InterfaceGlyphs.Mount), new(1, "Loaded", InterfaceGlyphs.Load)];
+
     /// <param name="model">The part turned as the rotation fields say, for the model view.</param>
-    public static Scene Build(ViewState state, TriangleMesh? model, PrintJob? job)
+    /// <param name="rotation">Part frame → print frame as the rotation fields say; forces are given in the part frame.</param>
+    public static Scene Build(ViewState state, TriangleMesh? model, Matrix4x4 rotation, PrintJob? job)
     {
         var scene = state.Mode switch
         {
             ViewMode.Toolpaths when job is not null => Toolpaths(state, job),
             ViewMode.Cells when job is not null => Cells(state, job),
             ViewMode.Results when job?.Solved is not null => Results(state, job, job.Solved),
-            _ => model is null ? new Scene() : new Scene(Model: FlatShaded(model)),
+            _ => model is null ? new Scene() : Model(state, model, rotation),
         };
         var shown = scene.Model is not null ? model?.Bounds : job?.Slice.PrintMesh.Bounds;
         return shown is { } bounds ? scene with { Bed = BedGrid(bounds) } : scene;
+    }
+
+    /// <summary>The model with the faces of its interfaces tinted, and their markers.</summary>
+    static Scene Model(ViewState state, TriangleMesh model, Matrix4x4 rotation)
+    {
+        var glyphs = InterfaceGlyphs.Build(model, rotation, state.Marks);
+        return new Scene(
+            Model: FlatShaded(model, InterfaceGlyphs.TriangleColours(model.TriangleCount, state.Marks)),
+            Glyphs: glyphs.TriangleCount == 0 ? null : Mesh([.. glyphs.Positions], [.. glyphs.Normals], [.. Enumerable.Range(0, glyphs.Positions.Count)], [.. glyphs.Colours]),
+            Legend: state.Marks.Count == 0 ? null : new Legend("Interfaces", "", InterfaceEntries));
     }
 
     static Scene Toolpaths(ViewState state, PrintJob job)
@@ -126,13 +155,34 @@ static class SceneBuilder
     static Scene Cells(ViewState state, PrintJob job)
     {
         var surface = Surface(job, job.Cells, state);
-        var scale = ColourScale.Sequential(0, 1);
         var (grid, cells) = (job.Grid, job.Cells);
+        var caption = $"{cells.Length:N0} cells of {grid.Pitch:0.##} x {grid.Pitch:0.##} mm, one per layer; {surface.FaceCount:N0} faces drawn";
+        if (state.CellColouring == CellColouring.Interfaces)
+        {
+            // The same test the solver uses, so this is what it will take each interface to be. The one being edited goes first.
+            var print = job.Slice.PrintMesh;
+            var interfaces = state.Marks.OrderByDescending(mark => mark.IsSelected)
+                .Select(mark => (Colour: InterfaceGlyphs.Colour(mark), Covers: InterfaceMapper.Covers(print, [.. mark.Triangles.Where(t => (uint)t < (uint)print.TriangleCount)], grid.Pitch)))
+                .ToList();
+            var held = surface.FaceColours(f =>
+            {
+                var (centre, normal) = (surface.FaceCentre(f), surface.FaceNormal(f));
+                foreach (var (colour, covers) in interfaces)
+                    if (covers(centre, normal)) return colour;
+                return Unreached;
+            });
+            return new Scene(
+                Cells: Mesh(surface.Positions, surface.Normals, surface.Indices, held),
+                Legend: new Legend("Cell faces the solver takes for each interface", "", InterfaceEntries),
+                Caption: caption);
+        }
+
+        var scale = ColourScale.Sequential(0, 1);
         var colours = surface.VertexColours(e => scale.Colour(grid.Fill(cells[e].I, cells[e].J, cells[e].K)));
         return new Scene(
             Cells: Mesh(surface.Positions, surface.Normals, surface.Indices, colours),
             Legend: new Legend("Fill: share of the cell holding plastic", "", [], scale),
-            Caption: $"{cells.Length:N0} cells of {grid.Pitch:0.##} x {grid.Pitch:0.##} mm, one per layer; {surface.FaceCount:N0} faces drawn");
+            Caption: caption);
     }
 
     static Scene Results(ViewState state, PrintJob job, SolvedJob solved)
@@ -213,17 +263,19 @@ static class SceneBuilder
         return surface;
     }
 
-    /// <summary>STL faces are flat, so every triangle gets its own corners and face normal.</summary>
-    static MeshGeometry3D FlatShaded(TriangleMesh mesh)
+    /// <summary>STL faces are flat, so every triangle gets its own corners, its face normal and its own colour.</summary>
+    static MeshGeometry3D FlatShaded(TriangleMesh mesh, Vector4[] triangleColours)
     {
         var positions = new Vector3[mesh.TriangleCount * 3];
         var normals = new Vector3[positions.Length];
+        var colours = new Vector4[positions.Length];
         for (var t = 0; t < mesh.TriangleCount; t++)
         {
             (positions[3 * t], positions[3 * t + 1], positions[3 * t + 2]) = mesh.Triangle(t);
             normals[3 * t] = normals[3 * t + 1] = normals[3 * t + 2] = mesh.Normal(t);
+            colours[3 * t] = colours[3 * t + 1] = colours[3 * t + 2] = triangleColours[t];
         }
-        return Mesh(positions, normals, [.. Enumerable.Range(0, positions.Length)], null);
+        return Mesh(positions, normals, [.. Enumerable.Range(0, positions.Length)], colours);
     }
 
     /// <summary>A grid of lines under the part, 10 mm apart, standing in for the bed.</summary>

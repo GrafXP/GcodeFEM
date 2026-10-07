@@ -94,8 +94,12 @@ public sealed class FemMesh
     public int NodeAt(int i, int j, int k) =>
         i < 0 || j < 0 || k < 0 || i >= NodesX || j >= NodesY || k > Grid.SizeZ ? -1 : denseNode[Dense(i, j, k)];
 
-    public static FemMesh Build(CellGrid grid, float minFill, IReadOnlyList<Fixture> fixtures)
+    public static FemMesh Build(CellGrid grid, float minFill, IReadOnlyList<Fixture> fixtures) => Build(grid, minFill, new LoadCase(fixtures, []));
+
+    /// <summary>The mesh for a load case: the cells that hang together with something one of its mounts holds.</summary>
+    public static FemMesh Build(CellGrid grid, float minFill, LoadCase loadCase)
     {
+        var (fixtures, faceFixtures) = (loadCase.Fixtures, loadCase.FaceFixtures);
         var occupied = grid.Occupied(minFill).ToArray();
         if (occupied.Length == 0) throw new InvalidOperationException("No cells reach the minimum fill.");
 
@@ -134,15 +138,25 @@ public sealed class FemMesh
             groups++;
         }
 
-        // Keep the groups that have at least one fixed corner.
+        // Keep the groups that have at least one fixed corner, or a free side that a mount holds.
         var anchored = new bool[groups];
         for (var c = 0; c < occupied.Length; c++)
         {
             if (anchored[group[c]]) continue;
+            var cell = occupied[c];
             for (var a = 0; a < HexElement.Nodes && !anchored[group[c]]; a++)
             {
-                var p = grid.NodePosition(occupied[c].I + HexElement.CornerX[a], occupied[c].J + HexElement.CornerY[a], occupied[c].K + HexElement.CornerZ[a]);
+                var p = grid.NodePosition(cell.I + HexElement.CornerX[a], cell.J + HexElement.CornerY[a], cell.K + HexElement.CornerZ[a]);
                 if (fixtures.Any(f => f.SelectsNode(p))) anchored[group[c]] = true;
+            }
+            if (faceFixtures.Count == 0) continue;
+            foreach (var (di, dj, dk) in FaceNeighbours)
+            {
+                if (anchored[group[c]]) break;
+                int i = cell.I + di, j = cell.J + dj, k = cell.K + dk;
+                if (grid.Contains(i, j, k) && slot[Slot(i, j, k)] >= 0) continue;
+                var (centre, normal) = (FaceCentre(grid, cell, di, dj, dk), new Vector3(di, dj, dk));
+                if (faceFixtures.Any(f => f.Holds(centre, normal) != Axes.None)) anchored[group[c]] = true;
             }
         }
         if (!anchored.Any(a => a)) throw new InvalidOperationException("No fixture touches the part.");
@@ -173,18 +187,22 @@ public sealed class FemMesh
         {
             var c = Cells[e];
             var h = Grid.CellHeight(c.K);
-            var lo = Grid.NodePosition(c.I, c.J, c.K);
-            var centre = lo + new Vector3(p / 2, p / 2, h / 2);
             foreach (var (di, dj, dk) in FaceNeighbours)
             {
                 if (active.Contains(new CellIndex(c.I + di, c.J + dj, c.K + dk))) continue;
                 var normal = new Vector3(di, dj, dk);
-                var half = new Vector3(di * p / 2, dj * p / 2, dk * h / 2);
                 var area = dk != 0 ? p * p : p * h;
                 var nodes = FaceCorners(e, di, dj, dk);
-                yield return new BoundaryFace(e, centre + half, normal, area, nodes[0], nodes[1], nodes[2], nodes[3]);
+                yield return new BoundaryFace(e, FaceCentre(Grid, c, di, dj, dk), normal, area, nodes[0], nodes[1], nodes[2], nodes[3]);
             }
         }
+    }
+
+    /// <summary>The middle of the side of <paramref name="cell"/> that faces (di, dj, dk).</summary>
+    static Vector3 FaceCentre(CellGrid grid, CellIndex cell, int di, int dj, int dk)
+    {
+        float p = grid.Pitch, h = grid.CellHeight(cell.K);
+        return grid.NodePosition(cell.I, cell.J, cell.K) + new Vector3((1 + di) * p / 2, (1 + dj) * p / 2, (1 + dk) * h / 2);
     }
 
     int[] FaceCorners(int cell, int di, int dj, int dk)

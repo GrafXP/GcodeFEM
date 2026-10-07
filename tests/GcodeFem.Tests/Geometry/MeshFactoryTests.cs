@@ -32,6 +32,40 @@ public class MeshFactoryTests
     }
 
     [Fact]
+    public void L_bracket_with_bolt_holes_is_a_closed_solid_of_the_right_volume()
+    {
+        var mesh = MeshFactory.LBracket(leg: 40, width: 10, height: 8, holes: 2, holeDiameter: 5, segments: 32);
+
+        Assert.Equal(new Box3(Vector3.Zero, new Vector3(40, 40, 8)), mesh.Bounds);
+        // Caps: 3 plain rectangles and 2 with a hole (32 + 4 triangles); 12 outer walls; 2 hole walls of 32 pieces.
+        Assert.Equal(2 * (3 * 2 + 2 * 36) + 12 * 2 + 2 * 32 * 2, mesh.TriangleCount);
+
+        var volume = 0.0;
+        var edges = new Dictionary<(int, int), int>();
+        for (var t = 0; t < mesh.TriangleCount; t++)
+        {
+            var (a, b, c) = mesh.Triangle(t);
+            volume += Vector3.Dot(a, Vector3.Cross(b, c)) / 6;
+            for (var e = 0; e < 3; e++)
+            {
+                var edge = (mesh.Indices[3 * t + e], mesh.Indices[3 * t + (e + 1) % 3]);
+                edges[edge] = edges.GetValueOrDefault(edge) + 1;
+            }
+        }
+        // The holes are 32-sided, so each takes a little less than a circle's worth.
+        var hole = 0.5 * 32 * 2.5 * 2.5 * Math.Sin(2 * Math.PI / 32);
+        Assert.InRange(volume, (700 - 2 * hole) * 8 - 0.5, (700 - 2 * hole) * 8 + 0.5);
+        Assert.All(edges, edge => Assert.Equal((1, 1), (edge.Value, edges.GetValueOrDefault((edge.Key.Item2, edge.Key.Item1)))));
+    }
+
+    [Fact]
+    public void L_bracket_refuses_holes_that_do_not_fit()
+    {
+        Assert.Throws<ArgumentException>(() => MeshFactory.LBracket(40, 10, 8, holes: 4, holeDiameter: 5));
+        Assert.Throws<ArgumentException>(() => MeshFactory.LBracket(40, 10, 8, holes: 1, holeDiameter: 10));
+    }
+
+    [Fact]
     public void Prism_rejects_a_clockwise_outline()
     {
         Vector2[] clockwise = [new(0, 0), new(0, 10), new(10, 10), new(10, 0)];

@@ -1,0 +1,55 @@
+{
+  "format": 1,
+  "model": {
+    "file": "bracket40_holes.stl",
+    "hash": "1a889c808df1e89d6e2543392096272f"
+  },
+  "print": {
+    "rotation": [
+      0,
+      0,
+      0
+    ],
+    "process": "0.20mm Standard @BBL X1C",
+    "filament": "Bambu PLA Basic @BBL X1C"
+  },
+  "interfaces": [
+    {
+      "name": "Bolts",
+      "kind": "boltHole",
+      "triangles": "170-201,204-235,238-253,256-271,274-305",
+      "axial": true
+    },
+    {
+      "name": "Tip",
+      "kind": "force",
+      "triangles": "162-163"
+    }
+  ],
+  "loadCases": [
+    {
+      "name": "Pull sideways",
+      "loads": {
+        "Tip": {
+          "force": [
+            20,
+            0,
+            0
+          ]
+        }
+      }
+    },
+    {
+      "name": "Push down",
+      "loads": {
+        "Tip": {
+          "force": [
+            0,
+            0,
+            -10
+          ]
+        }
+      }
+    }
+  ]
+}

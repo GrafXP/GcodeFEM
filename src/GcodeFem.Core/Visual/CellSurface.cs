@@ -132,6 +132,19 @@ public sealed class CellSurface
         return colours;
     }
 
+    /// <summary>Per-vertex colours from one colour per face.</summary>
+    public Vector4[] FaceColours(Func<int, Vector4> faceColour)
+    {
+        var colours = new Vector4[Positions.Length];
+        Parallel.For(0, FaceCount, f => colours.AsSpan(4 * f, 4).Fill(faceColour(f)));
+        return colours;
+    }
+
+    public Vector3 FaceCentre(int face) => (Positions[4 * face] + Positions[4 * face + 2]) / 2;
+
+    /// <summary>Outward, along one of the grid's directions.</summary>
+    public Vector3 FaceNormal(int face) => Normals[4 * face];
+
     /// <summary>
     /// The vertices moved by <paramref name="scale"/> times their node's displacement: the deformed
     /// shape. <paramref name="nodeDisplacements"/> holds one vector per node of <paramref name="mesh"/>,

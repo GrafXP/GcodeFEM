@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:hx="http://helix-toolkit.org/wpf/SharpDX"
         xmlns:local="clr-namespace:GcodeFem.App"
-        Title="GcodeFem" Width="1400" Height="900">
+        Title="{Binding Title}" Width="1400" Height="900">
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="Visible" />
         <local:EnumEqualsConverter x:Key="Is" />
@@ -36,7 +36,13 @@
 
         <ScrollViewer DockPanel.Dock="Left" Width="330" VerticalScrollBarVisibility="Auto">
             <StackPanel Margin="10">
-                <Button Content="Open model…" Click="OpenModel_Click" Padding="10,4" HorizontalAlignment="Left" />
+                <WrapPanel>
+                    <Button Content="Open model…" Click="OpenModel_Click" Padding="10,4" Margin="0,0,4,4" />
+                    <Button Content="Open study…" Click="OpenStudy_Click" Padding="10,4" Margin="0,0,4,4"
+                            ToolTip="A study is a model with how it is printed, its mounts and loads, and its load cases" />
+                    <Button Content="Save study" Click="SaveStudy_Click" Padding="10,4" Margin="0,0,4,4" />
+                    <Button Content="Save as…" Click="SaveStudyAs_Click" Padding="10,4" Margin="0,0,0,4" />
+                </WrapPanel>
                 <TextBlock Text="{Binding ModelName}" Style="{StaticResource Hint}" />
 
                 <GroupBox Header="Print" Margin="0,8,0,0" Padding="6,4">
@@ -68,26 +74,87 @@
                     </Grid>
                 </GroupBox>
 
-                <GroupBox Header="Load, in the print's directions (Z up from the bed)" Margin="0,8,0,0" Padding="6,4">
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="62" />
-                            <ColumnDefinition />
-                        </Grid.ColumnDefinitions>
-                        <Grid.RowDefinitions>
-                            <RowDefinition />
-                            <RowDefinition />
-                            <RowDefinition />
-                            <RowDefinition />
-                        </Grid.RowDefinitions>
-                        <TextBlock Text="Clamp" Style="{StaticResource Label}" ToolTip="The side of the printed part that is held" />
-                        <ComboBox Grid.Column="1" ItemsSource="{Binding Faces}" DisplayMemberPath="Label" SelectedItem="{Binding FixFace}" Style="{StaticResource Field}" />
-                        <TextBlock Grid.Row="1" Text="Force, N" Style="{StaticResource Label}" ToolTip="X, Y, Z in newtons, spread over the side opposite the clamp" />
-                        <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding Force}" Style="{StaticResource Field}" ToolTip="X, Y, Z in newtons, spread over the side opposite the clamp" />
-                        <TextBlock Grid.Row="2" Text="Mesh" Style="{StaticResource Label}" />
-                        <ComboBox Grid.Row="2" Grid.Column="1" ItemsSource="{Binding Levels}" DisplayMemberPath="Label" SelectedItem="{Binding Level}" Style="{StaticResource Field}" />
-                        <Button Grid.Row="3" Grid.Column="1" Content="Solve" Command="{Binding SolveCommand}" Padding="10,4" Margin="0,6,0,2" HorizontalAlignment="Left" />
-                    </Grid>
+                <GroupBox Header="Mounts and loads" Margin="0,8,0,0" Padding="6,4">
+                    <StackPanel>
+                        <!-- The interfaces: faces of the model where it is held or loaded. -->
+                        <ListBox ItemsSource="{Binding Interfaces}" SelectedItem="{Binding SelectedInterface}" MinHeight="40" MaxHeight="170"
+                                 HorizontalContentAlignment="Stretch" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <DockPanel Margin="0,2">
+                                        <Rectangle DockPanel.Dock="Left" Width="12" Height="12" RadiusX="2" RadiusY="2" Fill="{Binding Swatch}" VerticalAlignment="Top" Margin="0,3,8,0" />
+                                        <StackPanel>
+                                            <TextBlock TextTrimming="CharacterEllipsis">
+                                                <Run Text="{Binding Name, Mode=OneWay}" FontWeight="SemiBold" /><Run Text=": " /><Run Text="{Binding KindText, Mode=OneWay}" />
+                                            </TextBlock>
+                                            <TextBlock Text="{Binding FacesText}" Foreground="#FF52514E" TextWrapping="Wrap" />
+                                        </StackPanel>
+                                    </DockPanel>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                        <WrapPanel Margin="0,6,0,0">
+                            <Button Content="Add mount" Command="{Binding AddMountCommand}" Padding="8,3" Margin="0,0,4,0" ToolTip="A face where the part is held" />
+                            <Button Content="Add load" Command="{Binding AddLoadCommand}" Padding="8,3" Margin="0,0,4,0" ToolTip="A face where something pushes or pulls on the part" />
+                            <Button Content="Remove" Command="{Binding RemoveInterfaceCommand}" Padding="8,3" />
+                        </WrapPanel>
+
+                        <!-- The selected interface. -->
+                        <StackPanel Margin="0,10,0,0" Visibility="{Binding HasSelectedInterface, Converter={StaticResource Visible}}">
+                            <DockPanel Style="{StaticResource Field}">
+                                <TextBlock Text="Name" Width="62" VerticalAlignment="Center" />
+                                <TextBox Text="{Binding SelectedInterface.Name, UpdateSourceTrigger=PropertyChanged}" />
+                            </DockPanel>
+                            <DockPanel Style="{StaticResource Field}">
+                                <TextBlock Text="It is a" Width="62" VerticalAlignment="Center" />
+                                <ComboBox ItemsSource="{Binding Kinds}" DisplayMemberPath="Label" SelectedValuePath="Value" SelectedValue="{Binding SelectedInterface.Kind}" />
+                            </DockPanel>
+                            <DockPanel Style="{StaticResource Field}">
+                                <TextBlock Text="Faces" Width="62" VerticalAlignment="Center" />
+                                <Button DockPanel.Dock="Right" Content="Clear" Command="{Binding ClearFacesCommand}" Padding="8,3" Margin="4,0,0,0" />
+                                <ToggleButton Content="Pick on the model" IsChecked="{Binding IsPicking}" Padding="8,3"
+                                              ToolTip="While this is on, a click on the model adds the face under it; a click on a face that is already picked takes it off" />
+                            </DockPanel>
+                            <DockPanel Style="{StaticResource Field}"
+                                       ToolTip="A click picks the facet under it and its neighbours for as long as they differ by less than this: a flat face up to its edges, a hole's wall all the way round. Lower it to keep a flat face from running on into a rounded edge.">
+                                <TextBlock Text="A face runs on across edges of up to" VerticalAlignment="Center" />
+                                <TextBlock DockPanel.Dock="Right" Text="°" VerticalAlignment="Center" Margin="3,0,0,0" />
+                                <TextBox Text="{Binding PickAngle}" Margin="6,0,0,0" />
+                            </DockPanel>
+                            <DockPanel Style="{StaticResource Field}" Visibility="{Binding SelectedInterface.IsLoad, Converter={StaticResource Visible}, FallbackValue=Collapsed}"
+                                       ToolTip="{Binding SelectedInterface.ValueHint}">
+                                <TextBlock Text="{Binding SelectedInterface.ValueLabel}" Width="62" VerticalAlignment="Center" />
+                                <TextBox Text="{Binding SelectedInterface.ValueText, UpdateSourceTrigger=PropertyChanged}" />
+                            </DockPanel>
+                            <TextBlock Text="{Binding SelectedInterface.ValueError}" Foreground="#FFB3261E" TextWrapping="Wrap"
+                                       Visibility="{Binding SelectedInterface.HasValueError, Converter={StaticResource Visible}, FallbackValue=Collapsed}" />
+                            <CheckBox Content="Along the face's normal" IsChecked="{Binding SelectedInterface.AlongNormal}" Margin="62,3,0,3"
+                                      Visibility="{Binding SelectedInterface.IsForce, Converter={StaticResource Visible}, FallbackValue=Collapsed}"
+                                      ToolTip="The force is one number: how hard it pushes onto the face, square to it. Unticked, it is given as X, Y, Z." />
+                            <CheckBox Content="Also held along the hole" IsChecked="{Binding SelectedInterface.Axial}" Margin="62,3,0,3"
+                                      Visibility="{Binding SelectedInterface.IsBoltHole, Converter={StaticResource Visible}, FallbackValue=Collapsed}"
+                                      ToolTip="Ticked: a bolt done up tight. Unticked: a pin, which holds across the hole only, so the part can slide along it." />
+                        </StackPanel>
+
+                        <Separator Margin="0,8" />
+                        <DockPanel Style="{StaticResource Field}" ToolTip="The mounts are the same in every load case; each load has a value per load case">
+                            <TextBlock Text="Load case" Width="62" VerticalAlignment="Center" />
+                            <Button DockPanel.Dock="Right" Content="−" Command="{Binding RemoveLoadCaseCommand}" Width="24" Margin="4,0,0,0" ToolTip="Remove this load case" />
+                            <Button DockPanel.Dock="Right" Content="+" Command="{Binding AddLoadCaseCommand}" Width="24" Margin="4,0,0,0"
+                                    ToolTip="Add a load case that starts with this one's values" />
+                            <ComboBox ItemsSource="{Binding LoadCases}" DisplayMemberPath="Name" SelectedItem="{Binding SelectedLoadCase}" />
+                        </DockPanel>
+                        <DockPanel Style="{StaticResource Field}">
+                            <TextBlock Text="Its name" Width="62" VerticalAlignment="Center" />
+                            <TextBox Text="{Binding SelectedLoadCase.Name, UpdateSourceTrigger=PropertyChanged}" />
+                        </DockPanel>
+                        <DockPanel Style="{StaticResource Field}">
+                            <TextBlock Text="Mesh" Width="62" VerticalAlignment="Center" />
+                            <ComboBox ItemsSource="{Binding Levels}" DisplayMemberPath="Label" SelectedItem="{Binding Level}" />
+                        </DockPanel>
+                        <Button Content="Solve" Command="{Binding SolveCommand}" Padding="10,4" Margin="62,6,0,2" HorizontalAlignment="Left"
+                                ToolTip="Solves the load case shown, on the last slice" />
+                    </StackPanel>
                 </GroupBox>
 
                 <GroupBox Header="Layers" Margin="0,8,0,0" Padding="6,4" Visibility="{Binding HasLayers, Converter={StaticResource Visible}}">
@@ -121,6 +188,13 @@
                         <CheckBox Content="Thin lines instead of full beads" IsChecked="{Binding ThinLines}" Margin="0,8,0,2"
                                   ToolTip="Much less to draw: for big parts on a weak graphics card" />
                     </StackPanel>
+                </GroupBox>
+
+                <GroupBox Header="Cells" Margin="0,8,0,0" Padding="6,4" Visibility="{Binding IsCellView, Converter={StaticResource Visible}}">
+                    <DockPanel>
+                        <TextBlock Text="Colour by" VerticalAlignment="Center" Width="62" />
+                        <ComboBox ItemsSource="{Binding CellColourings}" DisplayMemberPath="Label" SelectedValuePath="Value" SelectedValue="{Binding CellColouring}" />
+                    </DockPanel>
                 </GroupBox>
 
                 <GroupBox Header="Result" Margin="0,8,0,0" Padding="6,4" Visibility="{Binding IsResultView, Converter={StaticResource Visible}}">
@@ -167,14 +241,27 @@
                                 ModelUpDirection="0,0,1"
                                 MSAA="Four"
                                 ShowViewCube="True"
-                                ShowCoordinateSystem="True">
+                                ShowCoordinateSystem="True"
+                                PreviewMouseLeftButtonDown="Viewport_MouseDown"
+                                PreviewMouseLeftButtonUp="Viewport_MouseUp">
+                    <hx:Viewport3DX.Style>
+                        <Style TargetType="hx:Viewport3DX">
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsPicking}" Value="True">
+                                    <Setter Property="Cursor" Value="Cross" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </hx:Viewport3DX.Style>
                     <!-- A light at the camera, so every face in view is lit in its own colour. -->
                     <hx:DirectionalLight3D Direction="{Binding Camera.LookDirection}" Color="#FFC8C8C8" />
                     <hx:DirectionalLight3D Direction="-0.3,0.5,-1" Color="#FF505050" />
                     <hx:AmbientLight3D Color="#FF303030" />
 
                     <hx:LineGeometryModel3D Geometry="{Binding BedGrid}" Color="#FF383835" Thickness="1" IsHitTestVisible="False" />
-                    <hx:MeshGeometryModel3D Geometry="{Binding ModelGeometry}" Material="{Binding ModelMaterial}" IsHitTestVisible="False" />
+                    <!-- The model carries the colours of its interfaces; faces are picked by a ray of our own, not by Helix's hit test. -->
+                    <hx:MeshGeometryModel3D Geometry="{Binding ModelGeometry}" Material="{Binding ColouredMaterial}" IsHitTestVisible="False" />
+                    <hx:MeshGeometryModel3D Geometry="{Binding GlyphGeometry}" Material="{Binding ColouredMaterial}" IsHitTestVisible="False" />
                     <hx:MeshGeometryModel3D Geometry="{Binding BeadGeometry}" Material="{Binding ColouredMaterial}" IsHitTestVisible="False" />
                     <hx:LineGeometryModel3D Geometry="{Binding BeadLines}" Color="White" Thickness="1.5" IsHitTestVisible="False" />
                     <hx:MeshGeometryModel3D Geometry="{Binding CellGeometry}" Material="{Binding ColouredMaterial}" IsHitTestVisible="False" />

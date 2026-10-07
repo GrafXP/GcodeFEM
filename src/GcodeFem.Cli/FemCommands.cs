@@ -2,40 +2,72 @@ using System.Diagnostics;
 using System.Numerics;
 using GcodeFem.Core.Fem;
 using GcodeFem.Core.Geometry;
+using GcodeFem.Core.Study;
 
 namespace GcodeFem.Cli;
 
 static class FemCommands
 {
-    /// <summary>A sliced, voxelized part with one bbox face clamped and the opposite one loaded.</summary>
-    public sealed record Problem(CellGrid Grid, IsotropicMaterial Material, LoadCase LoadCase, Box3 Bounds, Axis Axis, bool FixMax, float MinFill)
+    /// <summary>A sliced, voxelized part with its mounts and loads.</summary>
+    public sealed record Problem(CellGrid Grid, IsotropicMaterial Material, LoadCase LoadCase, float MinFill)
     {
-        /// <summary>Nodes of <paramref name="mesh"/> on the loaded face.</summary>
+        /// <summary>Nodes of <paramref name="mesh"/> that carry load.</summary>
         public List<int> LoadedNodes(FemMesh mesh)
         {
-            var loaded = LoadCase.Component(FixMax ? Bounds.Min : Bounds.Max, Axis);
-            return [.. Enumerable.Range(0, mesh.NodeCount).Where(n => MathF.Abs(LoadCase.Component(mesh.NodePosition(n), Axis) - loaded) < 1e-3f)];
+            var loads = Assembler.Loads(mesh, LoadCase);
+            return [.. Enumerable.Range(0, mesh.NodeCount).Where(n => loads[3 * n] != 0 || loads[3 * n + 1] != 0 || loads[3 * n + 2] != 0)];
         }
     }
 
-    /// <summary>Slice → voxelize → clamp one bbox face and load the opposite one, as the command line says.</summary>
+    /// <summary>
+    /// Slice → voxelize → mounts and loads. With --study they are the study's interfaces in one of its
+    /// load cases; without, one outer face of the printed cells is clamped and the opposite one loaded.
+    /// </summary>
     public static async Task<Problem> Prepare(CommandLine commandLine)
     {
-        var (result, toolpath) = await SliceCommands.SliceAndParse(commandLine);
+        var study = commandLine.Option("study") is { } path ? StudyFile.Load(path) : null;
+        var (result, toolpath) = await SliceCommands.SliceAndParse(commandLine, study);
         var material = new IsotropicMaterial(commandLine.Number("E", IsotropicMaterial.Pla.YoungsModulus), commandLine.Number("nu", IsotropicMaterial.Pla.PoissonRatio));
-        var (axis, fixMax) = ParseFace(commandLine.Option("fix") ?? "zmin");
-        var force = Text.Triple(commandLine.Option("force") ?? "0,0,-100", "force");
 
         var watch = Stopwatch.StartNew();
         var grid = Voxelizer.Voxelize(toolpath, result.Placement, result.PrintMesh.Bounds);
         var minFill = (float)commandLine.Number("min-fill", 0.05);
-        var bounds = grid.OccupiedBounds(minFill); // the cells' own outer faces, so clamp and load land on node planes
+        var voxelized = watch.Elapsed;
 
+        LoadCase loadCase;
         Console.WriteLine();
-        Console.WriteLine($"load case    clamp {commandLine.Option("fix") ?? "zmin"} face, {Text.Format(force)} N on the opposite face; E {material.YoungsModulus:0} MPa, nu {material.PoissonRatio}");
+        if (study is null)
+        {
+            var (axis, fixMax) = ParseFace(commandLine.Option("fix") ?? "zmin");
+            var force = Text.Triple(commandLine.Option("force") ?? "0,0,-100", "force");
+            var bounds = grid.OccupiedBounds(minFill); // the cells' own outer faces, so clamp and load land on node planes
+            loadCase = LoadCase.ClampAndPush(bounds, axis, fixMax, force);
+            Console.WriteLine($"load case    clamp {commandLine.Option("fix") ?? "zmin"} face, {Text.Format(force)} N on the opposite face; E {material.YoungsModulus:0} MPa, nu {material.PoissonRatio}");
+        }
+        else
+        {
+            var chosen = StudyCommands.Case(study, commandLine.Option("case"));
+            loadCase = InterfaceMapper.Map(result.PrintMesh, result.Placement.Rotation, grid.Pitch, study.Interfaces, chosen);
+            Console.WriteLine($"load case    '{chosen.Name}' of {Path.GetFileName(commandLine.Option("study"))}; E {material.YoungsModulus:0} MPa, nu {material.PoissonRatio}");
+            foreach (var item in study.Interfaces)
+                Console.WriteLine($"  {item.Name,-16} {item.Kind,-9} {(item.Kind.IsLoad() ? StudyCommands.Describe(item.Kind, chosen.Of(item)) : "")}");
+        }
         Console.WriteLine($"cells        grid {grid.SizeX} x {grid.SizeY} x {grid.SizeZ}, {grid.BlockCount} blocks of {CellGrid.BlockSize}^3; " +
-                          $"voxelized in {watch.Elapsed.TotalSeconds:0.00} s, {grid.TotalVolume:0.0} mm3 deposited, {grid.LostVolume:0.000} mm3 outside the grid");
-        return new Problem(grid, material, LoadCase.ClampAndPush(bounds, axis, fixMax, force), bounds, axis, fixMax, minFill);
+                          $"voxelized in {voxelized.TotalSeconds:0.00} s, {grid.TotalVolume:0.0} mm3 deposited, {grid.LostVolume:0.000} mm3 outside the grid");
+        return new Problem(grid, material, loadCase, minFill);
+    }
+
+    /// <summary>What each interface of a study got hold of on the cells: how many cell faces, their area, and the force that arrives.</summary>
+    public static void PrintReach(FemMesh mesh, LoadCase loadCase)
+    {
+        var held = Assembler.FixedDofs(mesh, loadCase);
+        var loads = Assembler.Loads(mesh, loadCase);
+        var applied = Vector3.Zero;
+        for (var n = 0; n < mesh.NodeCount; n++) applied += new Vector3((float)loads[3 * n], (float)loads[3 * n + 1], (float)loads[3 * n + 2]);
+        Console.WriteLine($"mounts+loads {Enumerable.Range(0, mesh.NodeCount).Count(n => held[3 * n] || held[3 * n + 1] || held[3 * n + 2]):N0} nodes held, " +
+                          $"{Enumerable.Range(0, mesh.NodeCount).Count(n => loads[3 * n] != 0 || loads[3 * n + 1] != 0 || loads[3 * n + 2] != 0):N0} nodes loaded with {Text.Format(applied)} N in all");
+        foreach (var reach in Assembler.Reach(mesh, loadCase))
+            Console.WriteLine($"  {reach.Name,-16} {(reach.IsLoad ? "loads" : "holds"),-9} {reach.Faces:N0} cell faces, {reach.Area:0.0} mm2{(reach.IsLoad ? $", {Text.Format(reach.Force)} N in the print's directions" : "")}");
     }
 
     /// <summary>Solves the part at full bead resolution, with a timing breakdown.</summary>
@@ -47,6 +79,7 @@ static class FemCommands
             new AnalysisOptions(MinFill: problem.MinFill, MaxIterations: (int)commandLine.Number("max-iterations", 50_000)));
 
         PrintAnalysis(fem);
+        PrintReach(fem.Mesh, problem.LoadCase);
         var face = problem.LoadedNodes(fem.Mesh).Select(fem.Displacement).ToList();
         if (face.Count > 0)
         {

@@ -3,6 +3,7 @@ using System.Numerics;
 using GcodeFem.Core.Gcode;
 using GcodeFem.Core.Geometry;
 using GcodeFem.Core.Slicing;
+using GcodeFem.Core.Study;
 
 namespace GcodeFem.Cli;
 
@@ -25,6 +26,8 @@ static class SliceCommands
     {
         var mesh = commandLine.Positional[0] switch
         {
+            "bracket" when commandLine.Number("holes", 0) > 0 => MeshFactory.LBracket((float)commandLine.Number("leg", 40), (float)commandLine.Number("width", 10),
+                (float)commandLine.Number("height", 8), (int)commandLine.Number("holes", 0), (float)commandLine.Number("hole", 5)),
             "bracket" => MeshFactory.LBracket((float)commandLine.Number("leg", 40), (float)commandLine.Number("width", 10), (float)commandLine.Number("height", 8)),
             "beam" => MeshFactory.Box(Vector3.Zero, new Vector3((float)commandLine.Number("length", 60), (float)commandLine.Number("width", 10), (float)commandLine.Number("height", 10))),
             var shape => throw new ArgumentException($"Unknown sample shape '{shape}' (use bracket or beam)."),
@@ -80,17 +83,20 @@ static class SliceCommands
         return 0;
     }
 
-    /// <summary>Slices the model with the command line's options and parses the G-code, printing as it goes.</summary>
-    public static async Task<(SliceResult Result, Toolpath Toolpath)> SliceAndParse(CommandLine commandLine)
+    /// <summary>
+    /// Slices the model with the command line's options and parses the G-code, printing as it goes.
+    /// With a <paramref name="study"/>, the model, its rotation and the presets come from there unless the command line says otherwise.
+    /// </summary>
+    public static async Task<(SliceResult Result, Toolpath Toolpath)> SliceAndParse(CommandLine commandLine, PartStudy? study = null)
     {
         var bambu = BambuInstallation.Locate();
         var selection = BambuSelection.Read(bambu);
         var presets = PresetLibrary.Load(bambu, selection.UserPresetFolder);
         var machine = commandLine.Option("machine") ?? selection.Machine;
-        var process = commandLine.Option("process") ?? selection.Process;
-        var filament = commandLine.Option("filament") ?? selection.Filament;
-        var rotation = commandLine.Option("rot") is { } rot ? Text.Triple(rot, "rot") : default;
-        var mesh = Stl.Read(commandLine.Positional[0]);
+        var process = commandLine.Option("process") ?? study?.Process ?? selection.Process;
+        var filament = commandLine.Option("filament") ?? study?.Filament ?? selection.Filament;
+        var rotation = commandLine.Option("rot") is { } rot ? Text.Triple(rot, "rot") : study?.Rotation ?? default;
+        var mesh = study is null ? Stl.Read(commandLine.Positional[0]) : StudyCommands.Model(study);
 
         var summary = presets.SummarizeFilament(filament);
         Console.WriteLine($"Bambu Studio {bambu.Version}");

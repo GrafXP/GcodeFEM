@@ -7,14 +7,21 @@ namespace GcodeFem.App;
 /// The app's command line: "model.stl --option value --flag". It can slice, solve, pick a view and
 /// save a screenshot without anyone touching the window, which is how the views are checked:
 ///
-///   GcodeFem.App model.stl [--rot x,y,z] [--process name] [--filament name]
-///                [--view model|toolpaths|cells|results]
-///                [--fix xmin|xmax|ymin|ymax|zmin|zmax] [--force x,y,z] [--level auto|0..5]
-///                [--colour feature|nozzletemperature|fan|speed|time|width|vonmises|displacement|interlayerstress|elementsize]
+///   GcodeFem.App model.stl | --study file.study.json
+///                [--rot x,y,z] [--process name] [--filament name]
+///                [--view model|toolpaths|cells|results] [--level auto|0..5]
+///                [--case name] [--fix xmin|xmax|ymin|ymax|zmin|zmax] [--force x,y,z]
+///                [--add fixed|sliding|bolthole|force|pressure|bearing] [--select name] [--name new-name] [--value "0,0,-20"]
+///                [--pick-angle degrees] [--click "x,y;x,y"] [--save-study file.study.json]
+///                [--colour feature|nozzletemperature|fan|speed|time|width|fill|interfaces|vonmises|displacement|interlayerstress|elementsize]
 ///                [--layers first-last] [--hide "sparse infill,top surface"] [--thin] [--pass n] [--scale-top percent]
 ///                [--deform 0..1] [--no-elements] [--look x,y,z] [--zoom factor]
 ///                [--screenshot file.png] [--size 1400x900] [--wait seconds]
 ///
+/// --fix and --force set up a quick load case: the model's face on that side of the print is fixed and the opposite
+/// one carries the force (N, in the print's directions). --add makes a new interface and --select picks an existing
+/// one; --name, --value and --click then apply to it. --click picks faces in the model view as the mouse would, at
+/// pixels read off a screenshot of the window.
 /// With --screenshot the app saves the picture and exits; its exit code is 1 if a step failed.
 /// </summary>
 sealed class StartupOptions

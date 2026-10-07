@@ -266,11 +266,94 @@ Read [PLAN.md](PLAN.md) for the design. This file only tracks where things stand
   - The big models are not hit-testable (`IsHitTestVisible="False"`), or every mouse click
     would test millions of triangles. Probing (M8) should march through the cell grid.
 
+## 2026-10-07 — session 4, on the desktop
+
+- M4 is committed as `2824104` and pushed, also on **`m3-octree`**; `main` is still at M2
+  (see session 3 for how to bring it over).
+- Before any change: 80 tests green.
+
+### M5 interfaces and loads editor: done
+- `Core/Geometry`:
+  - `MeshTopology` (which triangles share an edge), `FaceRegions.Grow` (a face from one
+    triangle, by an angle between neighbours) and `FaceRegions.OnPlane`.
+  - `MeshPicker.Pick` (ray → first triangle) and `.Nearest` (point → triangle).
+  - `SurfacePatch`: picked triangles as one surface, with area, centroid, mean normal,
+    `Components()` and `Spread(n)` (where to put markers). `PatchLocator` finds the patch
+    triangle next to a point through a grid of boxes; big triangles are cut up for it.
+  - `Cylinder.Fit`: axis, radius, length and hole-or-pin from a patch.
+  - `TriangleMesh.GeometryHash()`, `MeshFactory.LBracket(…, holes, holeDiameter)`.
+- `Core/Fem`:
+  - `LoadCase` has two more lists, `FaceFixtures` and `Tractions`: mounts and loads given by
+    the cell faces they reach. The old node and face selectors still work (`ClampAndPush`).
+  - `FemMesh.Build(grid, minFill, loadCase)` keeps the cells that hang together with a
+    face a mount holds.
+  - `Assembler.FreeMotion` names the rigid motion that the mounts leave free;
+    `FixedDofs` throws on it. `Assembler.Reach` reports what each mount and load got hold of.
+- `Core/Study`: `PartStudy`, `PartInterface`, `StudyLoadCase`, `LoadValue`; `StudyFile`
+  (JSON, `*.study.json`); `InterfaceMapper.Map` (interfaces + load case → `LoadCase` for
+  the cells) and `.Covers`; `FaceDescription`. PLAN.md §10 has the rules.
+- `Core/Visual`: `InterfaceGlyphs` (colours per triangle, cones, rods, arrows as a
+  `GlyphMesh`); `CellSurface.FaceColours`.
+- `GcodeFem.App`:
+  - `MainViewModel.Study.cs`: interfaces, load cases, picking, study open and save.
+    `InterfaceItem` keeps a value per load case and edits it as text.
+  - `MainWindow`: the "Mounts and loads" panel, Open study / Save study, left click picks
+    while "Pick on the model" is on. The stand-in load case is gone from the window.
+  - Cells view: "Colour by: interfaces, as the solver takes them".
+- CLI: `study new|add|show`, `solve|adapt --study file [--case name]`,
+  `sample bracket --holes 2 --hole 5`. `solve` and `adapt` now print how many nodes are
+  held and loaded and what each interface reached.
+- New samples: `samples/bracket40_holes.stl` and `samples/bracket40_holes.study.json`
+  (two bolt holes, a force on the tip, load cases "Pull sideways" and "Push down").
+- Tests: 141 green (about 35 s; 61 are new and take a few seconds together).
+- Checked, all with PLA Basic / 0.20mm Standard (the study names them):
+
+  | Check | How |
+  | --- | --- |
+  | Bracket, bolts and tip force, flat: 4 passes, 132k unknowns, 4 s, peak 18.4 MPa at the inner corner | `gcodefem adapt --study samples\bracket40_holes.study.json` |
+  | The same in the app, with what each interface held | `GcodeFem.App --study samples\bracket40_holes.study.json --view results` |
+  | Second load case: peak 12.1 MPa at the inner corner, bed side | `… adapt --study … --case "Push down"` |
+  | Standing on edge: same force, same spot in the part, peak 24.6 MPa | `… adapt --study … --rot 90,0,0` |
+  | Interfaces and the force arrow turn with the part | `GcodeFem.App --study … --rot 90,0,0 --select Tip --look -25,-40,-30` |
+  | Cell faces by interface | `GcodeFem.App --study … --view cells --colour interfaces --look -25,-40,-30` |
+  | Clicking: the top face, then the wall of the first hole (142 triangles) | `GcodeFem.App samples\bracket40_holes.stl --add fixed --click "640,420;757,490"` |
+  | A pin alone is refused: "free to slide along Z" | a study with `study add … --kind bolthole --free-along` |
+  | The old stand-in, as two interfaces | `GcodeFem.App samples\beam60.stl --view results --fix xmin --force 0,0,-20` |
+
+### What M5 found
+- **An interface follows the print where it steps back from the model.** On the beam the
+  first layer's corners are rounded, so two corner cells are missing. The stand-in clamps
+  the cells on the bounding plane only (1,273 nodes); the interface also takes the two
+  cell faces behind the missing corners (1,281 nodes). The deflection differs by 0.6 %,
+  but the peak at the clamp goes from 16.6 to 20.4 MPa and moves one cell in.
+  - The peak at a clamp is a singularity either way. M8 has to keep it out of the safety
+    factor (PLAN.md §7.4).
+- **The steps decide what a mount can do**, not only how accurately it does it: a sliding
+  mount on a slanted face cannot slide, and a bolt hole also stops the part from turning
+  about the bolt (PLAN.md §10). Exact versions need constraints that couple directions,
+  which the octree's "held or not" per direction cannot express.
+- The steps of a round hole measure 1.18 times its wall (296 against 251 mm²; the limit
+  is 4/π). A force is weighted so that this does not matter, and a pressure's total is
+  exact; only the reported area is larger.
+- Printed standing on edge, the bracket is 5 % stiffer under the same force and its peak a
+  third higher (24.6 against 18.4 MPa). The material is still the same every way, so
+  this is the layout of walls and infill alone.
+- Helix: `Viewport.UnProject(point)` gives the ray under the mouse and was right on the
+  first try (checked by clicking at pixels read off a screenshot). The model stays out of
+  Helix's hit test; `MeshPicker` does it on the triangles.
+- System.Text.Json writes every number of a vector on its own line in an indented file.
+  Not pretty, left as it is.
+
 ## Next
-- M5 interfaces and loads editor: picking, region growing, glyphs, load cases, project
-  save/load (PLAN.md §10, §13). It replaces the stand-in load case in `MainViewModel.SolveAsync`.
-  Interfaces live in the part frame, the viewer shows the print frame: the model view is
-  the natural place for picking.
+- M6 materials and TDS: JSON database, Bambu TDS import, filament → material mapping
+  (PLAN.md §9, §13). `IsotropicMaterial.Pla` is still used everywhere.
+- Open items from M5:
+  - A result stays on screen when the interfaces or the load case change after it; the
+    summary names the load case it belongs to, but nothing marks it as out of date.
+  - One load case is solved at a time. Solving all of them on one matrix needs the AMG
+    hierarchy kept alive in the bridge (the M3 item below).
+  - Gravity, torque and elastic supports are not there (PLAN.md §10).
+  - The model view does not show which face is under the mouse before the click.
 - Open items from M4:
   - A running solve cannot be cancelled: `AdaptiveAnalysis.Run` takes no cancellation
     token, and neither does the native solver.

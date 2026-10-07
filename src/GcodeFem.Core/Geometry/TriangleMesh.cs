@@ -1,4 +1,6 @@
 using System.Numerics;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 
 namespace GcodeFem.Core.Geometry;
 
@@ -36,6 +38,18 @@ public sealed class TriangleMesh
         var n = Vector3.Cross(b - a, c - a);
         var length = n.Length();
         return length > 1e-12f ? n / length : Vector3.UnitZ;
+    }
+
+    /// <summary>
+    /// Identifies the geometry: the same for any file that holds these triangles in this order.
+    /// What refers to triangles by index (picked faces) is only valid for a mesh with this hash.
+    /// </summary>
+    public string GeometryHash()
+    {
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        hash.AppendData(MemoryMarshal.AsBytes(Positions.AsSpan()));
+        hash.AppendData(MemoryMarshal.AsBytes(Indices.AsSpan()));
+        return Convert.ToHexString(hash.GetHashAndReset())[..32].ToLowerInvariant();
     }
 
     /// <summary>Applies an affine transform; a mirroring transform flips the winding back to outward.</summary>

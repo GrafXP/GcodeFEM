@@ -2,11 +2,15 @@ using System.Globalization;
 using System.IO;
 using System.Windows;
 using System.Windows.Data;
+using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Media.Media3D;
+using GcodeFem.Core.Fem;
 using GcodeFem.Core.Geometry;
+using GcodeFem.Core.Study;
 using GcodeFem.Core.Visual;
+using HelixToolkit.Wpf.SharpDX;
 using Microsoft.Win32;
 
 namespace GcodeFem.App;
@@ -32,25 +36,77 @@ public partial class MainWindow : Window
         Loaded += async (_, _) => await StartAsync();
     }
 
+    const string StudyFilter = "GcodeFem studies (*.study.json)|*.study.json|All files (*.*)|*.*";
+
     void OpenModel_Click(object sender, RoutedEventArgs e)
     {
         var dialog = new OpenFileDialog { Filter = "STL models (*.stl)|*.stl" };
         if (dialog.ShowDialog(this) == true) Load(dialog.FileName);
     }
 
-    bool Load(string path)
+    void OpenStudy_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new OpenFileDialog { Filter = StudyFilter };
+        if (dialog.ShowDialog(this) == true) Try(() => viewModel.OpenStudy(dialog.FileName), "Could not open the study");
+    }
+
+    void SaveStudy_Click(object sender, RoutedEventArgs e)
+    {
+        if (viewModel.StudyPath is { } path) Try(() => viewModel.SaveStudy(path), "Could not save the study");
+        else SaveStudyAs_Click(sender, e);
+    }
+
+    void SaveStudyAs_Click(object sender, RoutedEventArgs e)
+    {
+        if (viewModel.ModelPath is not { } model) return;
+        // Next to the model by default: the study names it by its path from there.
+        var dialog = new SaveFileDialog
+        {
+            Filter = StudyFilter,
+            InitialDirectory = Path.GetDirectoryName(viewModel.StudyPath ?? model),
+            FileName = Path.GetFileName(viewModel.StudyPath) ?? Path.GetFileNameWithoutExtension(model) + ".study.json",
+        };
+        if (dialog.ShowDialog(this) != true) return;
+        var path = dialog.FileName.EndsWith(".json", StringComparison.OrdinalIgnoreCase) ? dialog.FileName : dialog.FileName + ".study.json";
+        Try(() => viewModel.SaveStudy(path), "Could not save the study");
+    }
+
+    bool Load(string path) => Try(() => viewModel.LoadModel(path), "Could not open model");
+
+    /// <summary>Carries out something the user asked for; a failure is reported, not fatal.</summary>
+    bool Try(Action action, string title)
     {
         try
         {
-            viewModel.LoadModel(path);
+            action();
             return true;
         }
         catch (Exception ex) when (MainViewModel.IsExpected(ex))
         {
-            if (options.Screenshot is null) MessageBox.Show(this, ex.Message, "Could not open model", MessageBoxButton.OK, MessageBoxImage.Warning);
-            else Console.Error.WriteLine($"Could not open model: {ex.Message}");
+            if (options.Screenshot is null) MessageBox.Show(this, ex.Message, title, MessageBoxButton.OK, MessageBoxImage.Warning);
+            else Console.Error.WriteLine($"{title}: {ex.Message}");
             return false;
         }
+    }
+
+    // A click that is not the start of a drag picks the face under it. Helix turns the camera with the right button.
+    Point? pressed;
+
+    void Viewport_MouseDown(object sender, MouseButtonEventArgs e) => pressed = e.GetPosition(Viewport);
+
+    void Viewport_MouseUp(object sender, MouseButtonEventArgs e)
+    {
+        var at = e.GetPosition(Viewport);
+        if (pressed is { } from && (at - from).Length < 4) PickAt(at);
+        pressed = null;
+    }
+
+    /// <param name="at">In the viewport's own coordinates.</param>
+    void PickAt(Point at)
+    {
+        if (!viewModel.IsPicking) return;
+        var ray = Viewport.UnProject(at);
+        viewModel.Pick(ray.Position, ray.Direction);
     }
 
     /// <summary>
@@ -60,7 +116,9 @@ public partial class MainWindow : Window
     async Task StartAsync()
     {
         var presets = viewModel.LoadPresetsAsync();
-        var loaded = (options.Model ?? FindSample("cube20.stl")) is { } model && Load(model);
+        var loaded = options.Text("study") is { } study
+            ? Try(() => viewModel.OpenStudy(study), "Could not open the study")
+            : (options.Model ?? FindSample("cube20.stl")) is { } model && Load(model);
         var ok = loaded;
         try
         {
@@ -70,6 +128,7 @@ public partial class MainWindow : Window
                 viewModel.Process = options.Text("process") ?? viewModel.Process;
                 viewModel.Filament = options.Text("filament") ?? viewModel.Filament;
                 await presets;
+                ApplyStudy();
 
                 var view = options.Enum<ViewMode>("view") ?? ViewMode.Model;
                 if (view != ViewMode.Model)
@@ -79,15 +138,14 @@ public partial class MainWindow : Window
                 }
                 if (ok && view == ViewMode.Results)
                 {
-                    if (options.Text("fix") is { } face)
-                        viewModel.FixFace = viewModel.Faces.First(f => f.Label.Replace(" ", "").StartsWith(face, StringComparison.OrdinalIgnoreCase));
-                    viewModel.Force = options.Text("force") ?? viewModel.Force;
                     if (options.Text("level") is { } level and not "auto")
                         viewModel.Level = viewModel.Levels.First(l => l.Value == int.Parse(level, CultureInfo.InvariantCulture));
                     await viewModel.SolveAsync();
                     ok = viewModel.HasResult;
                 }
                 if (ok) ApplyView(view);
+                if (ok && view == ViewMode.Model) await ClickAsync();
+                if (ok && options.Text("save-study") is { } saved) viewModel.SaveStudy(Path.GetFullPath(saved));
             }
         }
         catch (Exception ex) when (MainViewModel.IsExpected(ex))
@@ -105,11 +163,54 @@ public partial class MainWindow : Window
         Close();
     }
 
+    /// <summary>The command line's say on the study: the load case, a quick clamp and push, a new interface, the one selected and its value.</summary>
+    void ApplyStudy()
+    {
+        if (options.Text("case") is { } name)
+            viewModel.SelectedLoadCase = viewModel.LoadCases.FirstOrDefault(c => string.Equals(c.Name, name, StringComparison.OrdinalIgnoreCase))
+                                         ?? throw new KeyNotFoundException($"There is no load case '{name}'.");
+        if (options.Text("fix") is { } face)
+        {
+            var side = face.ToLowerInvariant() is ['x' or 'y' or 'z', 'm', 'i' or 'a', 'n' or 'x'] text
+                ? (Axis: (Axis)(text[0] - 'x'), Max: text.EndsWith("max", StringComparison.Ordinal))
+                : throw new FormatException($"--fix expects xmin, xmax, ymin, ymax, zmin or zmax but got '{face}'.");
+            viewModel.ClampAndPush(side.Axis, side.Max, options.Triple("force") ?? new System.Numerics.Vector3(0, 0, -100));
+        }
+        if (options.Enum<InterfaceKind>("add") is { } kind) viewModel.AddInterface(kind);
+        if (options.Text("select") is { } selected)
+            viewModel.SelectedInterface = viewModel.Interfaces.FirstOrDefault(i => string.Equals(i.Name, selected, StringComparison.OrdinalIgnoreCase))
+                                          ?? throw new KeyNotFoundException($"There is no interface '{selected}'.");
+        if (options.Text("name") is { } renamed && viewModel.SelectedInterface is { } item) item.Name = renamed;
+        if (options.Text("value") is { } value && viewModel.SelectedInterface is { } valued) valued.ValueText = value;
+        if (options.Number("pick-angle") is { } angle) viewModel.PickAngle = angle;
+    }
+
+    /// <summary>
+    /// Clicks on the model as the mouse would, at the points of --click "x,y;x,y": pixels of a
+    /// screenshot of this window, which is where one reads them off.
+    /// </summary>
+    async Task ClickAsync()
+    {
+        if (options.Text("click") is not { } clicks) return;
+        while (!viewModel.SceneReady.IsCompleted) await viewModel.SceneReady;
+        await Task.Delay(TimeSpan.FromSeconds(1)); // the camera must have been through a frame for the ray to come out right
+        viewModel.IsPicking = true;
+        var dpi = VisualTreeHelper.GetDpi(this);
+        foreach (var click in clicks.Split(';', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (click.Split(',') is not [var x, var y]) throw new FormatException($"--click expects x,y but got '{click}'.");
+            var inContent = new Point(double.Parse(x, CultureInfo.InvariantCulture) / dpi.DpiScaleX, double.Parse(y, CultureInfo.InvariantCulture) / dpi.DpiScaleY);
+            PickAt(((UIElement)Content).TranslatePoint(inContent, Viewport));
+        }
+        viewModel.IsPicking = false;
+    }
+
     void ApplyView(ViewMode view)
     {
         viewModel.View = view;
         if (options.Enum<ToolpathColouring>("colour") is { } colouring) viewModel.Colouring = colouring;
         if (options.Enum<ResultQuantity>("colour") is { } quantity) viewModel.Quantity = quantity;
+        if (options.Enum<CellColouring>("colour") is { } cells) viewModel.CellColouring = cells;
         if (options.Text("layers")?.Split('-') is [var low, var high])
         {
             viewModel.LayerLow = 1;

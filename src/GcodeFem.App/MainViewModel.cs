@@ -10,11 +10,11 @@ using GcodeFem.Core.Fem;
 using GcodeFem.Core.Gcode;
 using GcodeFem.Core.Geometry;
 using GcodeFem.Core.Slicing;
+using GcodeFem.Core.Study;
 using GcodeFem.Core.Visual;
 using HelixToolkit.Maths;
 using HelixToolkit.SharpDX;
 using HelixToolkit.Wpf.SharpDX;
-using Axis = GcodeFem.Core.Fem.Axis;
 using Color = System.Windows.Media.Color;
 using PerspectiveCamera = HelixToolkit.Wpf.SharpDX.PerspectiveCamera;
 using Point3D = System.Windows.Media.Media3D.Point3D;
@@ -75,8 +75,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             SpecularColor = new Color4(0, 0, 0, 1),
             VertexColorBlendingFactor = 1,
         };
-        FixFace = Faces[4];
         Level = Levels[0];
+        ResetStudy();
     }
 
     public DefaultEffectsManager EffectsManager { get; } = new();
@@ -90,7 +90,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         FarPlaneDistance = 10000,
     };
 
-    public PhongMaterial ModelMaterial { get; } = PhongMaterials.LightGray;
     public PhongMaterial ColouredMaterial { get; }
 
     public TriangleMesh? Part { get; private set; }
@@ -134,20 +133,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     [NotifyCanExecuteChangedFor(nameof(SliceCommand))]
     public partial bool CanSlice { get; set; }
 
-    // ---- load case: a stand-in until interfaces arrive ----
-
-    public IReadOnlyList<Choice<(Axis Axis, bool Max)>> Faces { get; } =
-    [
-        new((Axis.X, false), "X min"), new((Axis.X, true), "X max"),
-        new((Axis.Y, false), "Y min"), new((Axis.Y, true), "Y max"),
-        new((Axis.Z, false), "Z min (bed side)"), new((Axis.Z, true), "Z max (top)"),
-    ];
-
-    [ObservableProperty]
-    public partial Choice<(Axis Axis, bool Max)> FixFace { get; set; }
-
-    [ObservableProperty]
-    public partial string Force { get; set; } = "0, 0, -100";
+    // ---- mesh ----
 
     public IReadOnlyList<Choice<int?>> Levels { get; } =
     [
@@ -165,10 +151,11 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     // ---- view ----
 
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(IsToolpathView), nameof(IsResultView), nameof(HasLayers))]
+    [NotifyPropertyChangedFor(nameof(IsToolpathView), nameof(IsCellView), nameof(IsResultView), nameof(HasLayers))]
     public partial ViewMode View { get; set; }
 
     public bool IsToolpathView => View == ViewMode.Toolpaths;
+    public bool IsCellView => View == ViewMode.Cells;
     public bool IsResultView => View == ViewMode.Results;
     public bool HasLayers => View != ViewMode.Model && HasPrint;
 
@@ -291,6 +278,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     public partial MeshGeometry3D? ModelGeometry { get; set; }
 
+    /// <summary>The markers of the interfaces: cones on mounts, arrows for loads.</summary>
+    [ObservableProperty]
+    public partial MeshGeometry3D? GlyphGeometry { get; set; }
+
     [ObservableProperty]
     public partial MeshGeometry3D? BeadGeometry { get; set; }
 
@@ -319,7 +310,12 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     partial void OnRotationXChanged(double value) => OnRotationChanged();
     partial void OnRotationYChanged(double value) => OnRotationChanged();
     partial void OnRotationZChanged(double value) => OnRotationChanged();
-    partial void OnViewChanged(ViewMode value) => Redraw();
+    partial void OnViewChanged(ViewMode value)
+    {
+        if (value != ViewMode.Model) IsPicking = false; // faces are picked on the model only
+        Redraw();
+    }
+
     partial void OnColouringChanged(ToolpathColouring value) => Redraw();
     partial void OnThinLinesChanged(bool value) => Redraw();
     partial void OnQuantityChanged(ResultQuantity value) => Redraw();
@@ -401,16 +397,18 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     {
         var mesh = Stl.Read(path);
         Part = mesh;
+        ModelPath = Path.GetFullPath(path);
         job = null;
         HasPrint = HasResult = false;
         Passes.Clear();
         LineTypes.Clear();
         ResultSummary = ResultWarning = "";
+        ResetStudy(); // interfaces are faces of the model that was open
         View = ViewMode.Model;
 
         var size = mesh.Bounds.Size;
         ModelName = $"{Path.GetFileName(path)}: {mesh.TriangleCount:N0} triangles, {size.X:0.##} x {size.Y:0.##} x {size.Z:0.##} mm";
-        Status = "Model loaded. Slice it to see the toolpaths.";
+        Status = "Model loaded. Add its mounts and loads, and slice it to see the toolpaths.";
         FitRequested?.Invoke(mesh.Transformed(Rotation).Bounds);
         Redraw();
     }
@@ -477,12 +475,14 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     [RelayCommand(CanExecute = nameof(CanStartSolve))]
     public async Task SolveAsync()
     {
-        if (job is not { } current) return;
+        if (job is not { } current || SelectedLoadCase is not { } shown) return;
         IsBusy = true;
         try
         {
-            var force = ParseTriple(Force);
-            var (axis, fixMax) = FixFace.Value;
+            if (Interfaces.FirstOrDefault(item => item.HasValueError) is { } unread)
+                throw new FormatException($"The value of '{unread.Name}' cannot be read: {unread.ValueError}");
+            var study = ToStudy();
+            var chosen = study.LoadCases[LoadCases.IndexOf(shown)];
             var options = new AdaptiveOptions(RootLevel: Level.Value, MinFill: PrintJob.MinFill, KeepPassFields: true);
             Passes.Clear();
             Status = "Solving: building the mesh…";
@@ -494,11 +494,12 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
             var solved = await Task.Run(() =>
             {
-                var bounds = current.Grid.OccupiedBounds(PrintJob.MinFill); // the cells' own outer faces, so clamp and load land on node planes
-                var loadCase = LoadCase.ClampAndPush(bounds, axis, fixMax, force);
-                var mesh = FemMesh.Build(current.Grid, PrintJob.MinFill, loadCase.Fixtures);
+                // The interfaces are faces of the model; the slice says how it was turned for this print.
+                var loadCase = InterfaceMapper.Map(current.Slice.PrintMesh, current.Slice.Placement.Rotation, current.Grid.Pitch, study.Interfaces, chosen);
+                var mesh = FemMesh.Build(current.Grid, PrintJob.MinFill, loadCase);
+                var reach = Assembler.Reach(mesh, loadCase);
                 var result = AdaptiveAnalysis.Run(mesh, IsotropicMaterial.Pla, loadCase, LinearSolvers.Best(), options, ((IProgress<AdaptivePass>)progress).Report);
-                return new SolvedJob(result);
+                return new SolvedJob(result, chosen.Name, reach);
             });
 
             if (!ReferenceEquals(job, current)) return; // sliced again or another model opened meanwhile
@@ -541,9 +542,14 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         var mesh = result.Mesh;
         var cell = mesh.Cells[final.PeakCell];
         var at = mesh.Grid.NodePosition(cell.I, cell.J, cell.K) + new Vector3(mesh.Grid.Pitch / 2, mesh.Grid.Pitch / 2, mesh.Grid.CellHeight(cell.K) / 2);
-        var dropped = mesh.DroppedCells > 0 ? $" {mesh.DroppedCells:N0} cells are not connected to the clamp and were left out." : "";
-        ResultSummary = $"Max von Mises {final.MaxVonMises:0.00} MPa at ({at.X:0.0}, {at.Y:0.0}, {at.Z:0.0}) mm, layer {cell.K + 1}.\n" +
+        var dropped = mesh.DroppedCells > 0 ? $" {mesh.DroppedCells:N0} cells are not connected to a mount and were left out." : "";
+        // What the solver took each interface to be: a check on the picking. A force is given as it acts on the print.
+        var reach = string.Join("; ", solved.Reach.Select(r => r.IsLoad
+            ? $"{r.Name} loads {r.Faces:N0} cell faces with ({r.Force.X:0.##}, {r.Force.Y:0.##}, {r.Force.Z:0.##}) N"
+            : $"{r.Name} holds {r.Faces:N0} cell faces"));
+        ResultSummary = $"{solved.LoadCaseName}: max von Mises {final.MaxVonMises:0.00} MPa at ({at.X:0.0}, {at.Y:0.0}, {at.Z:0.0}) mm, layer {cell.K + 1}.\n" +
                         $"Max displacement {solved.MaxDisplacement:0.0000} mm.\n" +
+                        $"{reach}.\n" +
                         $"{result.Passes.Count} {(result.Passes.Count == 1 ? "pass" : "passes")}, {final.Dofs:N0} unknowns in the last, {result.Time.TotalSeconds:0.0} s. " +
                         $"Stopped because {result.StopReason}.{dropped}\n" +
                         $"Material: generic PLA, E {IsotropicMaterial.Pla.YoungsModulus:0} MPa, isotropic.";
@@ -571,7 +577,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         Pass,
         (float)(ScaleTop / 100),
         DeformationFactor,
-        ShowElements);
+        ShowElements,
+        CellColouring,
+        CurrentMarks());
 
     /// <summary>Brings the viewport up to date. Builds run one at a time, and the last request always wins.</summary>
     void Redraw()
@@ -590,7 +598,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             var watch = System.Diagnostics.Stopwatch.StartNew();
             try
             {
-                var scene = await Task.Run(() => SceneBuilder.Build(state, state.Mode == ViewMode.Model ? part?.Transformed(rotation) : null, current));
+                var scene = await Task.Run(() => SceneBuilder.Build(state, state.Mode == ViewMode.Model ? part?.Transformed(rotation) : null, rotation, current));
                 Apply(scene with { Caption = scene.Caption.Length > 0 ? $"{scene.Caption}; built in {watch.ElapsedMilliseconds:N0} ms" : "" });
             }
             catch (Exception ex)
@@ -604,6 +612,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     void Apply(Scene scene)
     {
         ModelGeometry = scene.Model;
+        GlyphGeometry = scene.Glyphs;
         BeadGeometry = scene.Beads;
         BeadLines = scene.BeadLines;
         CellGeometry = scene.Cells;

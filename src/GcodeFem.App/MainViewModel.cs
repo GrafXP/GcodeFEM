@@ -9,6 +9,7 @@ using CommunityToolkit.Mvvm.Input;
 using GcodeFem.Core.Fem;
 using GcodeFem.Core.Gcode;
 using GcodeFem.Core.Geometry;
+using GcodeFem.Core.Materials;
 using GcodeFem.Core.Slicing;
 using GcodeFem.Core.Study;
 using GcodeFem.Core.Visual;
@@ -60,6 +61,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     BambuInstallation? bambu;
     PresetLibrary? presets;
+    MaterialLibrary materials = MaterialLibrary.Load();
     string machine = "";
     PrintJob? job;
     Task redraw = Task.CompletedTask;
@@ -125,6 +127,18 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     [ObservableProperty]
     public partial string? Filament { get; set; }
+
+    /// <summary>The material the selected filament is solved with, in a sentence or two.</summary>
+    [ObservableProperty]
+    public partial string MaterialText { get; set; } = "";
+
+    /// <summary>The filament has no material of its own, or one the solver cannot use: shown in the colour of a caution.</summary>
+    [ObservableProperty]
+    public partial bool MaterialIsStandIn { get; set; }
+
+    public MaterialLibrary Materials => materials;
+
+    public PresetLibrary? Presets => presets;
 
     [ObservableProperty]
     public partial string Printer { get; set; } = "Looking for Bambu Studio…";
@@ -307,6 +321,48 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     [NotifyCanExecuteChangedFor(nameof(SliceCommand), nameof(SolveCommand))]
     public partial bool IsBusy { get; set; }
 
+    partial void OnFilamentChanged(string? value) => RefreshMaterial();
+
+    /// <summary>Reads the material files again, after the materials window changed them.</summary>
+    public void ReloadMaterials()
+    {
+        materials = MaterialLibrary.Load(materials.Directory);
+        RefreshMaterial();
+    }
+
+    /// <summary>Says which material the selected filament will be solved with. The solve itself goes by the filament of the slice.</summary>
+    void RefreshMaterial()
+    {
+        if (Filament is not { } filament)
+        {
+            (MaterialText, MaterialIsStandIn) = ("", false);
+            return;
+        }
+        // The type decides the stand-in; it is known once Bambu Studio's presets are read.
+        var type = presets is not null && presets.Contains(filament) ? presets.SummarizeFilament(filament).Type : null;
+        var match = materials.Match(filament, type);
+        var material = match.Material;
+        if (material.Lacking() is { Count: > 0 } lacking)
+        {
+            MaterialText = $"{material.Name} gives no {string.Join(" and no ", lacking.Select(p => p.Label()))}: it cannot be solved with until that is filled in.";
+            MaterialIsStandIn = true;
+            return;
+        }
+
+        var numbers = $"E {material.Number(MaterialProperty.YoungsModulusXY):0} MPa in the plane of the layers" +
+                      (material.Number(MaterialProperty.YoungsModulusZ) is { } z ? $", {z:0} across them" : "") +
+                      (material.Number(MaterialProperty.TensileStrengthXY) is { } strength
+                          ? $"; tensile strength {strength:0.#}" + (material.Number(MaterialProperty.TensileStrengthZ) is { } weak ? $" and {weak:0.#} MPa" : " MPa")
+                          : "");
+        MaterialText = match.Kind switch
+        {
+            MatchKind.ByName => $"{material.Name}: {numbers}.",
+            MatchKind.ByType => $"No data for this filament. {material.Name} stands in for it, as for every {match.Type} without data of its own: {numbers}.",
+            _ => match.Describe(),
+        };
+        MaterialIsStandIn = match.IsStandIn;
+    }
+
     partial void OnRotationXChanged(double value) => OnRotationChanged();
     partial void OnRotationYChanged(double value) => OnRotationChanged();
     partial void OnRotationZChanged(double value) => OnRotationChanged();
@@ -378,6 +434,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             if (found is null)
             {
                 Printer = "Bambu Studio not found: slicing is unavailable.";
+                RefreshMaterial();
                 return;
             }
 
@@ -388,6 +445,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             Filament ??= found.Selection.Filament;
             Printer = $"{machine} (Bambu Studio {bambu.Version})";
             CanSlice = true;
+            RefreshMaterial();
         }
         catch (Exception ex) when (IsExpected(ex))
         {
@@ -485,6 +543,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 throw new FormatException($"The value of '{unread.Name}' cannot be read: {unread.ValueError}");
             var study = ToStudy();
             var chosen = study.LoadCases[LoadCases.IndexOf(shown)];
+            // The material of the filament the part was sliced with, which need not be the one selected now.
+            var match = materials.Match(current.Toolpath);
+            var material = match.Material.Isotropic();
             var options = new AdaptiveOptions(RootLevel: Level.Value, MinFill: PrintJob.MinFill, KeepPassFields: true);
             Passes.Clear();
             Status = "Solving: building the mesh…";
@@ -500,8 +561,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 var loadCase = InterfaceMapper.Map(current.Slice.PrintMesh, current.Slice.Placement.Rotation, current.Grid.Pitch, study.Interfaces, chosen);
                 var mesh = FemMesh.Build(current.Grid, PrintJob.MinFill, loadCase);
                 var reach = Assembler.Reach(mesh, loadCase);
-                var result = AdaptiveAnalysis.Run(mesh, IsotropicMaterial.Pla, loadCase, LinearSolvers.Best(), options, ((IProgress<AdaptivePass>)progress).Report);
-                return new SolvedJob(result, chosen.Name, reach);
+                var result = AdaptiveAnalysis.Run(mesh, material, loadCase, LinearSolvers.Best(), options, ((IProgress<AdaptivePass>)progress).Report);
+                return new SolvedJob(result, chosen.Name, reach, match);
             });
 
             if (!ReferenceEquals(job, current)) return; // sliced again or another model opened meanwhile
@@ -554,16 +615,35 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                         $"{reach}.\n" +
                         $"{result.Passes.Count} {(result.Passes.Count == 1 ? "pass" : "passes")}, {final.Dofs:N0} unknowns in the last, {result.Time.TotalSeconds:0.0} s. " +
                         $"Stopped because {result.StopReason}.{dropped}\n" +
-                        $"Material: generic PLA, E {IsotropicMaterial.Pla.YoungsModulus:0} MPa, isotropic.";
+                        MaterialLine(solved.Material);
 
         var unconverged = result.Passes.Where(p => !p.Solve.Converged).Select(p => p.Index + 1).ToList();
         var warnings = new List<string>();
+        if (solved.Material.Kind == MatchKind.None) warnings.Add(solved.Material.Describe());
         if (final.PeakLevel > 0)
             warnings.Add($"The peak still sits in an element of {1 << final.PeakLevel}³ cells. Coarse elements read too low (down to half the real stress), so the real peak is higher.");
         if (unconverged.Count > 0)
             warnings.Add($"The linear solver did not converge in pass {string.Join(", ", unconverged)}.");
         ResultWarning = string.Join("\n", warnings);
         Status = $"Solved in {result.Time.TotalSeconds:0.0} s.";
+    }
+
+    /// <summary>What the result was solved with, and whose numbers those are.</summary>
+    static string MaterialLine(MaterialMatch match)
+    {
+        var material = match.Material;
+        var isotropic = material.Isotropic();
+        var across = material.Number(MaterialProperty.YoungsModulusZ) is { } z && z != isotropic.YoungsModulus
+            ? $" (its value in the plane of the layers; across them it is {z:0}, which the solver does not use yet)"
+            : "";
+        var poisson = material.Of(MaterialProperty.PoissonRatio) is { IsAssumed: true } ? ", assumed" : "";
+        var whose = match.Kind switch
+        {
+            MatchKind.ByName => "",
+            MatchKind.ByType => $" It stands in for {match.Filament}, which has no data of its own.",
+            _ => " No data for this filament.",
+        };
+        return $"Material: {material.Name}, E {isotropic.YoungsModulus:0} MPa in every direction{across}, Poisson's ratio {isotropic.PoissonRatio:0.##}{poisson}.{whose}";
     }
 
     void OnLineTypeChanged(object? sender, PropertyChangedEventArgs e) => Redraw();

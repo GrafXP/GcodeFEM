@@ -1,0 +1,175 @@
+{
+  "format": 1,
+  "name": "Bambu PPS-CF",
+  "vendor": "Bambu Lab",
+  "type": "PPS-CF",
+  "filaments": [
+    "Bambu PPS-CF"
+  ],
+  "standsInForType": true,
+  "documents": [
+    {
+      "id": "tds",
+      "title": "Bambu Filament Technical Data Sheet V1.0, PPS-CF",
+      "file": "tds/bambu-pps-cf-tds-v1.0.pdf",
+      "url": "https://store.bblcdn.com/26f4f40359484040a8660c9150a90fc0.pdf",
+      "sha256": "d0246a1d2acd61802385e8f9d8a1e3a3e6db5b426337f6c56993402d4c2f2cd0"
+    }
+  ],
+  "specimenNote": "Infill density 100 %. All the specimens were printed at the following settings: Printer = X1E, Chamber Temperature = 60 °C, Nozzle Temperature = 320 °C, Printing Speed = 60 mm/s, Bed Temperature = 110 °C, Infill Density = 100%. All the specimens were not annealed before testing.",
+  "properties": {
+    "density": {
+      "value": 1.26,
+      "unit": "g/cm³",
+      "method": "ISO 1183",
+      "source": "tds",
+      "page": 2
+    },
+    "youngsModulusXY": {
+      "value": 8230,
+      "spread": 270,
+      "unit": "MPa",
+      "method": "ISO 527, GB/T 1040",
+      "source": "tds",
+      "page": 2
+    },
+    "youngsModulusZ": {
+      "value": 2850,
+      "spread": 160,
+      "unit": "MPa",
+      "method": "ISO 527, GB/T 1040",
+      "source": "tds",
+      "page": 2
+    },
+    "tensileStrengthXY": {
+      "value": 87,
+      "spread": 5,
+      "unit": "MPa",
+      "method": "ISO 527, GB/T 1040",
+      "source": "tds",
+      "page": 2
+    },
+    "tensileStrengthZ": {
+      "value": 24,
+      "spread": 3,
+      "unit": "MPa",
+      "method": "ISO 527, GB/T 1040",
+      "source": "tds",
+      "page": 2
+    },
+    "elongationAtBreakXY": {
+      "value": 1.2,
+      "spread": 0.4,
+      "unit": "%",
+      "method": "ISO 527, GB/T 1040",
+      "source": "tds",
+      "page": 2
+    },
+    "elongationAtBreakZ": {
+      "value": 0.7,
+      "spread": 0.3,
+      "unit": "%",
+      "method": "ISO 527, GB/T 1040",
+      "source": "tds",
+      "page": 2
+    },
+    "bendingModulusXY": {
+      "value": 7160,
+      "spread": 280,
+      "unit": "MPa",
+      "method": "ISO 178, GB/T 9341",
+      "source": "tds",
+      "page": 2
+    },
+    "bendingModulusZ": {
+      "value": 2460,
+      "spread": 190,
+      "unit": "MPa",
+      "method": "ISO 178, GB/T 9341",
+      "source": "tds",
+      "page": 2
+    },
+    "bendingStrengthXY": {
+      "value": 142,
+      "spread": 5,
+      "unit": "MPa",
+      "method": "ISO 178, GB/T 9341",
+      "source": "tds",
+      "page": 2
+    },
+    "bendingStrengthZ": {
+      "value": 36,
+      "spread": 4,
+      "unit": "MPa",
+      "method": "ISO 178, GB/T 9341",
+      "source": "tds",
+      "page": 2
+    },
+    "impactStrengthXY": {
+      "value": 27.8,
+      "spread": 2.3,
+      "unit": "kJ/m²",
+      "method": "ISO 179, GB/T 1043",
+      "source": "tds",
+      "page": 2
+    },
+    "notchedImpactStrengthXY": {
+      "value": 6.2,
+      "spread": 1.6,
+      "unit": "kJ/m²",
+      "method": "ISO 179, GB/T 1043",
+      "source": "tds",
+      "page": 2
+    },
+    "impactStrengthZ": {
+      "value": 2.8,
+      "spread": 0.4,
+      "unit": "kJ/m²",
+      "method": "ISO 179, GB/T 1043",
+      "source": "tds",
+      "page": 2
+    },
+    "poissonRatio": {
+      "value": 0.35,
+      "unit": "",
+      "assumed": "The data sheet gives none; 0.35 is usual for rigid thermoplastics."
+    },
+    "glassTransitionTemperature": {
+      "value": 100,
+      "unit": "°C",
+      "method": "DSC, 10 °C/min",
+      "source": "tds",
+      "page": 2
+    },
+    "nozzleTemperatureMin": {
+      "value": 310,
+      "unit": "°C",
+      "source": "tds",
+      "page": 1
+    },
+    "nozzleTemperatureMax": {
+      "value": 340,
+      "unit": "°C",
+      "source": "tds",
+      "page": 1
+    },
+    "specimenNozzleTemperature": {
+      "value": 320,
+      "unit": "°C",
+      "source": "tds",
+      "page": 3
+    },
+    "specimenBedTemperature": {
+      "value": 110,
+      "unit": "°C",
+      "source": "tds",
+      "page": 3
+    },
+    "specimenPrintSpeed": {
+      "value": 60,
+      "unit": "mm/s",
+      "source": "tds",
+      "page": 3
+    }
+  }
+}

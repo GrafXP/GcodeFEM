@@ -48,6 +48,11 @@ static class Text
         return t.TotalHours >= 1 ? $"{(int)t.TotalHours}h {t.Minutes:00}m" : $"{t.Minutes}m {t.Seconds:00}s";
     }
 
+    /// <summary>Units and signs as plain ASCII: PowerShell 5.1 garbles anything else on its way to the screen.</summary>
+    public static string Ascii(string text) =>
+        text.Replace("°C", "C").Replace("°", " deg").Replace("³", "3").Replace("²", "2").Replace("±", "+-").Replace("Ø", "D")
+            .Replace('’', '\'').Replace('‘', '\'').Replace('–', '-');
+
     public static string Megabytes(long bytes) => $"{bytes / (1024.0 * 1024):0} MB";
 
     /// <summary>"x,y,z" → three floats.</summary>

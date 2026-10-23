@@ -58,6 +58,7 @@
                             <RowDefinition />
                             <RowDefinition />
                             <RowDefinition />
+                            <RowDefinition />
                         </Grid.RowDefinitions>
                         <TextBlock Text="Lies on" Style="{StaticResource Label}" />
                         <ToggleButton Grid.Column="1" Content="Lay a face on the bed" IsChecked="{Binding IsPlacing}" Padding="8,3" Style="{StaticResource Field}"
@@ -74,7 +75,24 @@
                         <ComboBox Grid.Row="3" Grid.Column="1" ItemsSource="{Binding Processes}" SelectedItem="{Binding Process}" Style="{StaticResource Field}" />
                         <TextBlock Grid.Row="4" Text="Filament" Style="{StaticResource Label}" />
                         <ComboBox Grid.Row="4" Grid.Column="1" ItemsSource="{Binding Filaments}" SelectedItem="{Binding Filament}" Style="{StaticResource Field}" />
-                        <Button Grid.Row="5" Grid.Column="1" Content="Slice" Command="{Binding SliceCommand}" Padding="10,4" Margin="0,6,0,2" HorizontalAlignment="Left" />
+                        <TextBlock Grid.Row="5" Text="Material" VerticalAlignment="Top" Margin="0,5,0,0" />
+                        <StackPanel Grid.Row="5" Grid.Column="1" Style="{StaticResource Field}">
+                            <!-- What the filament is solved with. A material that is not the filament's own is said so, in the colour of a caution. -->
+                            <TextBlock Text="{Binding MaterialText}" TextWrapping="Wrap" Margin="0,2,0,0">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding MaterialIsStandIn}" Value="True">
+                                                <Setter Property="Foreground" Value="#FF8A5300" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+                            <Button Content="Materials…" Click="Materials_Click" Padding="8,3" Margin="0,4,0,0" HorizontalAlignment="Left"
+                                    ToolTip="The material of every filament, each number with its source; and new materials from technical data sheets" />
+                        </StackPanel>
+                        <Button Grid.Row="6" Grid.Column="1" Content="Slice" Command="{Binding SliceCommand}" Padding="10,4" Margin="0,6,0,2" HorizontalAlignment="Left" />
                     </Grid>
                 </GroupBox>
 

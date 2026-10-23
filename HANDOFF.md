@@ -414,9 +414,140 @@ Read [PLAN.md](PLAN.md) for the design. This file only tracks where things stand
 - System.Text.Json writes every number of a vector on its own line in an indented file.
   Not pretty, left as it is.
 
+## 2026-10-08 — session 5, on the desktop
+
+- Everything up to "the middle mouse button pans" is committed and pushed on
+  **`m3-octree`** (`18baba9`); `main` is still at M2 (see session 3).
+- Before any change: 156 tests green.
+- M6 was committed at the start of session 6, **without `materials/tds/`**: Bambu's 45
+  data sheets, 20 MB of PDFs that are Bambu's, stay on the desktop, untracked, until
+  Martin decides whether they go into a public repository. Without them the material
+  files still work, and the test that reads every sheet again does not.
+
+### M6 materials and TDS: done
+- Martin widened it during the session: not PLA Basic and PETG HF alone, but **a library of
+  every Bambu Lab filament**. It has 45 materials (PLAN.md §9 has what is in it and what
+  is missing).
+- `Core/Materials`:
+  - `Material`, `MaterialValue`, `MaterialDocument`, `MaterialProperty` (21 properties
+    with their units and labels), `TypicalValues` (Poisson's ratio by filament type).
+    `Material.Isotropic()` is what the solver takes; `Lacking()` says what it is missing;
+    `Material.Generic()` is the stand-in of last resort.
+  - `MaterialFile`: `*.material.json`. Refuses a value without source or reason, and a
+    value in another unit than its property's.
+  - `MaterialLibrary`: a folder of material files. `Match(filament, type)` and
+    `Match(toolpath)`, `Save`, `Attach` (copies a sheet into `tds/`), `Problems`.
+    `DefaultDirectory()` is `GCODEFEM_MATERIALS`, else the nearest `materials` folder with
+    material files at or above the program (the repository's), else
+    `%APPDATA%\GcodeFem\materials`.
+  - `PdfText`: a PDF's words as lines (PdfPig 0.1.16, new in `GcodeFem.Core.csproj`).
+  - `TdsImporter` and `BambuTds`: a sheet → a material, with what was not found and what
+    the user should look at. `BambuTds.AlignWithStudio` takes name and type from Bambu
+    Studio's preset and compares `impact_strength_z`.
+- `Core/Slicing` (both found while checking M6 end to end, both older than M6):
+  - `PresetLibrary.Merge(…, inheritNil)`: a "nil" in a user's preset is what the preset
+    inherits at that place. **"eSun PLA+" did not slice on this machine before**: the CLI
+    refused its `nozzle_temperature: ["230", "nil"]`.
+  - `BambuSlicer.PlateFor`: a filament that does not print on the Cool Plate gets a plate
+    named (`--curr-bed-type`). **PETG, ABS, ASA, PC and PA did not slice before.**
+    `SliceResult.Plate` says which. Slices of PLA and TPU keep their cache key.
+- `GcodeFem.App`:
+  - `MainViewModel`: `MaterialText` / `MaterialIsStandIn` for the print panel; the solve
+    takes `materials.Match(job.Toolpath)`; the result's last line names the material, and
+    a generic one goes into the warning box. `SolvedJob.Material`.
+  - `MaterialsWindow` + `MaterialsViewModel` (`ValueRow`, `MaterialEntry`): the library,
+    the form, import, save, discard.
+  - `StartupOptions`: `--materials-window [name]`, `--import-tds sheet.pdf`; with
+    `--screenshot` the picture is then of that window.
+- CLI: `material list|show|import`; `solve` and `adapt` print the material and take
+  `--material <name>`, `--materials <folder>`; `--E` and `--nu` still override. `slice`
+  prints the plate if one was named. `Text.Ascii` keeps units readable in PowerShell 5.1.
+- `IsotropicMaterial.Pla` stays, for the benchmarks, the tests and `Material.Generic()`.
+- Tests: 228 green (about 35 s). 72 are new: the template on both layouts and
+  its quirks, the file format, matching, and every material file against its sheet
+  (`RepositoryMaterialsTests` reads all 45 PDFs again, in 4 s).
+- Checked, on the bracket study of M5 unless said otherwise:
+
+  | Check | How |
+  | --- | --- |
+  | PLA Basic from its sheet: E 2580, peak 18.44 MPa, loaded face 0.945 mm | `gcodefem adapt --study samples\bracket40_holes.study.json` |
+  | The numbers used until now give 0.975 mm and the same peak: 0.945 / 0.975 = 2500 / 2580 | the same with `--E 2500 --nu 0.35` |
+  | A filament of another vendor slices, and is solved with the stand-in, with a warning | `… --filament "eSun PLA+"` |
+  | PETG HF: the textured plate is named, E 1810, ν 0.38, 1.374 mm | `… --filament "Bambu PETG HF @BBL X1C"` |
+  | A support filament is refused: "it gives no Young's modulus" | `… --filament "Bambu Support For PLA @BBL X1C"` |
+  | The library, and what each of Martin's 22 presets gets | `gcodefem material list` |
+  | A sheet read without saving, with the check against Bambu Studio | `gcodefem material import sheet.pdf --dry-run` |
+  | The print panel's material line and the result's | `GcodeFem.App --study samples\bracket40_holes.study.json --view results --screenshot out.png` |
+  | The same for a filament without data: caution colour, then the warning box | `… --filament "eSun PLA+"`, `… --filament "Generic HIPS @BBL X1C" --view results` |
+  | The materials window on PLA Basic | `GcodeFem.App samples\cube20.stl --materials-window "Bambu PLA Basic" --screenshot out.png` |
+  | A sheet of each layout read into the form | `GcodeFem.App samples\cube20.stl --materials-window --import-tds sheet.pdf --screenshot out.png` |
+
+- Not checked by hand: clicking through the materials window (editing a cell, Save,
+  Discard, the question on closing). The view model's paths ran in the scripted import;
+  the buttons themselves need a hand on the mouse.
+
+### How the library was collected, for when Bambu adds a filament
+- The store's page of a filament links its current sheet:
+  `https://eu.store.bambulab.com/products/<handle>` (`us.store…` redirects there from
+  here). The links go to `store.bblcdn.com`, `store.bblcdn.eu` or `cdn.shopify.com`.
+  - The handles are not the filament names: `pla-basic-filament`, `abs-filament`,
+    `asa-filament`, `pc-filament`, `pla-tough-upgrade` (PLA Tough+), `pla-silk-upgrade`
+    (PLA Silk+), `pla-silk-multi-color` (PLA Silk), `support-for-pla-new`,
+    `tpu-85a-tpu-90a`; the others are the name in lower case with hyphens.
+  - **The store limits requests.** Six pages at once got HTTP 429 after 19 pages. One at
+    a time with 12 s in between went through.
+- Many links are bare hashes, and the pages link test reports as well. **Which PDF is the
+  sheet is told by its content**: `gcodefem material import <pdf> --dry-run` either reads
+  it or says that no template knows it.
+- Sheets of filaments that are no longer sold were still on Bambu's Shopify CDN under
+  guessable names: `https://cdn.shopify.com/s/files/1/0584/7236/6216/files/Bambu_<Name>_Technical_Data_Sheet.pdf`,
+  and the same under `…/0645/5876/0155/…`. The two hold different versions of some sheets.
+- Then, for each: `gcodefem material import <pdf> --url <link> [--stand-in] [--replace]`.
+  The scripts that did the fetching and the choosing were scratch and are not kept; every
+  material file records the link and the hash of its sheet.
+
+### What M6 found
+- **Bambu's sheets and Bambu Studio's presets are not always of one mind.** The preset's
+  `impact_strength_z` is the sheet's number in 33 of 38 cases. Where it is not, the preset
+  is behind (PETG Basic: the sheet is V3.0 of January 2026) or holds a sibling's number
+  (PLA Tough+ has PLA Basic's 13.8).
+- **A new version of a sheet can change the numbers a lot.** PETG Basic: E 1460 MPa in
+  V2.0, 2780 in V3.0. PLA Basic: 2680 in V1.0, 2580 in V3.0, and its strength across the
+  layers 35 → 31 MPa. The version is in every material's title for that reason.
+- Stores hold different versions under one file name: the PLA Basic sheet of one Shopify
+  store is V1.0, of the other V3.0. The copy on the CDN of PA6-CF says 5.5 kJ/m² where
+  the store's says 15.5.
+- Most specimens were annealed; not all. PETG Basic V3.0 does not say so, the TPU 85A and
+  90A were only dried, and the two sheets in the new layout speak of annealing as
+  something one may do. The notes are in the material files.
+- TPU is three orders of magnitude softer than the rest (E 5–10 MPa) except "TPU for AMS"
+  (1190 MPa). The desktop's selected filament is that one.
+- PdfPig reads these files well. What it cannot give: spaces in some headings, and some
+  letters of the newest sheets' side notes.
+- The stresses of the bracket do not change with the material (PLAN.md §9). That makes
+  M6 look like less than it is: the strengths and the stiffness across the layers are in
+  the files, waiting for M7 and M8.
+
+### Open items from M6
+- **No template for any vendor but Bambu.** Martin's own filaments run on stand-ins until
+  their sheets are typed into the materials window, or get templates of their own.
+- No sheet for PLA Dynamic, PLA Impact, PLA Lite, PPA-GF, Support W, Support G.
+- In the new layout the note on the specimens has to be read by a person (PLA Pure, PETG
+  Matte): their material files say "Infill density 100 %." and no more.
+- A value given as a bound ("> 650 %" elongation of the TPUs) is left out.
+- The plate chosen in Bambu Studio is not read (PLAN.md §2).
+- A study names a filament, not a material. Another material can be forced in the CLI
+  (`--material`) but not in the app.
+- A stand-in is chosen by a tick per material; two ticks for one type are reported, not
+  prevented.
+- Gravity can be built now that the density is there (PLAN.md §10); it is not.
+
 ## Next
-- M6 materials and TDS: JSON database, Bambu TDS import, filament → material mapping
-  (PLAN.md §9, §13). `IsotropicMaterial.Pla` is still used everywhere.
+- M7 print-aware material: line directions per cell, orthotropic stiffness (E in the
+  plane and across the layers are in the material files now), feature classes, and the
+  bond factor from nozzle temperature, fan and time gaps (PLAN.md §6, §13). The bond
+  factor is 1 at the conditions the sheet's specimens were printed at, which the material
+  files record.
 - Open items from M5:
   - A result stays on screen when the interfaces or the load case change after it; the
     summary names the load case it belongs to, but nothing marks it as out of date.

@@ -1,0 +1,44 @@
+{
+  "format": 1,
+  "name": "Bambu Support for ABS",
+  "vendor": "Bambu Lab",
+  "type": "ABS",
+  "filaments": [
+    "Bambu Support for ABS"
+  ],
+  "documents": [
+    {
+      "id": "tds",
+      "title": "Bambu Filament Technical Data Sheet V1.0, Support for ABS",
+      "file": "tds/bambu-support-for-abs-tds-v1.0.pdf",
+      "url": "https://store.bblcdn.com/4ea7b59ca78c485f828115735ed35050.pdf",
+      "sha256": "35f3f69ae2f5097c2d9ef0d7a928a48dc25b478fb01d8b5cf0ac2a9d9904e655"
+    }
+  ],
+  "properties": {
+    "density": {
+      "value": 1.16,
+      "unit": "g/cm³",
+      "method": "ISO 1183",
+      "source": "tds",
+      "page": 2
+    },
+    "poissonRatio": {
+      "value": 0.35,
+      "unit": "",
+      "assumed": "The data sheet gives none; 0.35 is usual for rigid thermoplastics."
+    },
+    "nozzleTemperatureMin": {
+      "value": 240,
+      "unit": "°C",
+      "source": "tds",
+      "page": 1
+    },
+    "nozzleTemperatureMax": {
+      "value": 270,
+      "unit": "°C",
+      "source": "tds",
+      "page": 1
+    }
+  }
+}

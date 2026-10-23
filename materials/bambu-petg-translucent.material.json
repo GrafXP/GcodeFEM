@@ -1,0 +1,174 @@
+{
+  "format": 1,
+  "name": "Bambu PETG Translucent",
+  "vendor": "Bambu Lab",
+  "type": "PETG",
+  "filaments": [
+    "Bambu PETG Translucent"
+  ],
+  "documents": [
+    {
+      "id": "tds",
+      "title": "Bambu Filament Technical Data Sheet V1.0, PETG Translucent",
+      "file": "tds/bambu-petg-translucent-tds-v1.0.pdf",
+      "url": "https://store.bblcdn.com/s1/default/338c9cd853fd44d9b6ed354a49048e72/Bambu_PETG_Translucent_Technical_Data_Sheet.pdf",
+      "sha256": "76246afc09c01b232869072208abbace373650b5b1e661ab222b4605f67a5229"
+    }
+  ],
+  "specimenNote": "Infill density 100 %. All the specimens were printed at the following settings: Nozzle Temperature = 255 °C, Printing Speed = 150 mm/s, Bed Temperature = 70 °C, Infill Density = 100%. All the specimens were annealed and dried at 65 °C for 8 h before testing.",
+  "properties": {
+    "density": {
+      "value": 1.25,
+      "unit": "g/cm³",
+      "method": "ISO 1183",
+      "source": "tds",
+      "page": 2
+    },
+    "youngsModulusXY": {
+      "value": 1420,
+      "spread": 160,
+      "unit": "MPa",
+      "method": "ISO 527, GB/T 1040",
+      "source": "tds",
+      "page": 2
+    },
+    "youngsModulusZ": {
+      "value": 1230,
+      "spread": 140,
+      "unit": "MPa",
+      "method": "ISO 527, GB/T 1040",
+      "source": "tds",
+      "page": 2
+    },
+    "tensileStrengthXY": {
+      "value": 33,
+      "spread": 4,
+      "unit": "MPa",
+      "method": "ISO 527, GB/T 1040",
+      "source": "tds",
+      "page": 2
+    },
+    "tensileStrengthZ": {
+      "value": 29,
+      "spread": 3,
+      "unit": "MPa",
+      "method": "ISO 527, GB/T 1040",
+      "source": "tds",
+      "page": 2
+    },
+    "elongationAtBreakXY": {
+      "value": 8.2,
+      "spread": 1.3,
+      "unit": "%",
+      "method": "ISO 527, GB/T 1040",
+      "source": "tds",
+      "page": 2
+    },
+    "elongationAtBreakZ": {
+      "value": 5.2,
+      "spread": 0.9,
+      "unit": "%",
+      "method": "ISO 527, GB/T 1040",
+      "source": "tds",
+      "page": 2
+    },
+    "bendingModulusXY": {
+      "value": 1610,
+      "spread": 130,
+      "unit": "MPa",
+      "method": "ISO 178, GB/T 9341",
+      "source": "tds",
+      "page": 2
+    },
+    "bendingModulusZ": {
+      "value": 1520,
+      "spread": 110,
+      "unit": "MPa",
+      "method": "ISO 178, GB/T 9341",
+      "source": "tds",
+      "page": 2
+    },
+    "bendingStrengthXY": {
+      "value": 68,
+      "spread": 3,
+      "unit": "MPa",
+      "method": "ISO 178, GB/T 9341",
+      "source": "tds",
+      "page": 2
+    },
+    "bendingStrengthZ": {
+      "value": 55,
+      "spread": 4,
+      "unit": "MPa",
+      "method": "ISO 178, GB/T 9341",
+      "source": "tds",
+      "page": 2
+    },
+    "impactStrengthXY": {
+      "value": 37.4,
+      "spread": 3.3,
+      "unit": "kJ/m²",
+      "method": "ISO 179, GB/T 1043",
+      "source": "tds",
+      "page": 2
+    },
+    "notchedImpactStrengthXY": {
+      "value": 8.6,
+      "spread": 2.1,
+      "unit": "kJ/m²",
+      "method": "ISO 179, GB/T 1043",
+      "source": "tds",
+      "page": 2
+    },
+    "impactStrengthZ": {
+      "value": 7.2,
+      "spread": 1.8,
+      "unit": "kJ/m²",
+      "method": "ISO 179, GB/T 1043",
+      "source": "tds",
+      "page": 2
+    },
+    "poissonRatio": {
+      "value": 0.38,
+      "unit": "",
+      "assumed": "The data sheet gives none; 0.38 is usual for PETG."
+    },
+    "glassTransitionTemperature": {
+      "value": 70,
+      "unit": "°C",
+      "method": "DSC, 10 °C/min",
+      "source": "tds",
+      "page": 2
+    },
+    "nozzleTemperatureMin": {
+      "value": 230,
+      "unit": "°C",
+      "source": "tds",
+      "page": 1
+    },
+    "nozzleTemperatureMax": {
+      "value": 270,
+      "unit": "°C",
+      "source": "tds",
+      "page": 1
+    },
+    "specimenNozzleTemperature": {
+      "value": 255,
+      "unit": "°C",
+      "source": "tds",
+      "page": 3
+    },
+    "specimenBedTemperature": {
+      "value": 70,
+      "unit": "°C",
+      "source": "tds",
+      "page": 3
+    },
+    "specimenPrintSpeed": {
+      "value": 150,
+      "unit": "mm/s",
+      "source": "tds",
+      "page": 3
+    }
+  }
+}

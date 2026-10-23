@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 using GcodeFem.Core.Fem;
 using GcodeFem.Core.Gcode;
 using GcodeFem.Core.Geometry;
+using GcodeFem.Core.Materials;
 using GcodeFem.Core.Slicing;
 using GcodeFem.Core.Study;
 using GcodeFem.Core.Visual;
@@ -66,9 +67,10 @@ sealed class SolvedJob
 {
     /// <param name="loadCase">The name of the load case that was solved.</param>
     /// <param name="reach">What each interface got hold of on the cells.</param>
-    public SolvedJob(AdaptiveResult result, string loadCase, IReadOnlyList<InterfaceReach> reach)
+    /// <param name="material">The material it was solved with, and how the filament came by it.</param>
+    public SolvedJob(AdaptiveResult result, string loadCase, IReadOnlyList<InterfaceReach> reach, MaterialMatch material)
     {
-        (LoadCaseName, Reach) = (loadCase, reach);
+        (LoadCaseName, Reach, Material) = (loadCase, reach, material);
         Result = result;
         NodeDisplacements = ResultFields.NodeDisplacements(result);
         Displacement = ResultFields.DisplacementMagnitude(result.Mesh, NodeDisplacements);
@@ -80,6 +82,7 @@ sealed class SolvedJob
     public AdaptiveResult Result { get; }
     public string LoadCaseName { get; }
     public IReadOnlyList<InterfaceReach> Reach { get; }
+    public MaterialMatch Material { get; }
     public Vector3[] NodeDisplacements { get; }
     public float[] Displacement { get; }
     public float[] InterlayerStress { get; }

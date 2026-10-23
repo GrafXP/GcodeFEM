@@ -71,6 +71,12 @@ public partial class MainWindow : Window
         Try(() => viewModel.SaveStudy(path), "Could not save the study");
     }
 
+    void Materials_Click(object sender, RoutedEventArgs e)
+    {
+        new MaterialsWindow(viewModel.Materials, viewModel.Presets) { Owner = this }.ShowDialog();
+        viewModel.ReloadMaterials(); // whatever was saved there counts from now on
+    }
+
     bool Load(string path) => Try(() => viewModel.LoadModel(path), "Could not open model");
 
     /// <summary>Carries out something the user asked for; a failure is reported, not fatal.</summary>
@@ -120,6 +126,7 @@ public partial class MainWindow : Window
             ? Try(() => viewModel.OpenStudy(study), "Could not open the study")
             : (options.Model ?? FindSample("cube20.stl")) is { } model && Load(model);
         var ok = loaded;
+        MaterialsWindow? materials = null;
         try
         {
             if (loaded)
@@ -147,6 +154,13 @@ public partial class MainWindow : Window
                 if (ok && view == ViewMode.Model) await ClickAsync();
                 if (ok && options.Text("save-study") is { } saved) viewModel.SaveStudy(Path.GetFullPath(saved));
             }
+            if (options.Has("materials-window"))
+            {
+                materials = new MaterialsWindow(viewModel.Materials, viewModel.Presets, scripted: true) { Owner = this };
+                materials.Show();
+                if (options.Text("materials-window") is { } name) materials.Select(name);
+                if (options.Text("import-tds") is { } sheet) materials.Import(Path.GetFullPath(sheet));
+            }
         }
         catch (Exception ex) when (MainViewModel.IsExpected(ex))
         {
@@ -158,8 +172,9 @@ public partial class MainWindow : Window
         if (options.Screenshot is not { } file) return;
         while (!viewModel.SceneReady.IsCompleted) await viewModel.SceneReady;
         await Task.Delay(TimeSpan.FromSeconds(options.Number("wait") ?? 1.5)); // a few frames, so the new geometry is on screen
-        SaveScreenshot(file);
+        SaveScreenshot(file, (FrameworkElement)(materials ?? (Window)this).Content);
         Environment.ExitCode = ok ? 0 : 1;
+        materials?.Close();
         Close();
     }
 
@@ -274,10 +289,9 @@ public partial class MainWindow : Window
         camera.FarPlaneDistance = Math.Max(2000, radius * 40);
     }
 
-    /// <summary>The window's content as a PNG, the 3D view included.</summary>
-    void SaveScreenshot(string file)
+    /// <summary>A window's content as a PNG, the 3D view included.</summary>
+    void SaveScreenshot(string file, FrameworkElement content)
     {
-        var content = (FrameworkElement)Content;
         var dpi = VisualTreeHelper.GetDpi(this);
         var bitmap = new RenderTargetBitmap(
             (int)Math.Ceiling(content.ActualWidth * dpi.DpiScaleX), (int)Math.Ceiling(content.ActualHeight * dpi.DpiScaleY),

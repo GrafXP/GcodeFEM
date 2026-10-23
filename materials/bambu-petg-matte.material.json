@@ -1,0 +1,166 @@
+{
+  "format": 1,
+  "name": "Bambu PETG Matte",
+  "vendor": "Bambu Lab",
+  "type": "PETG",
+  "filaments": [
+    "Bambu PETG Matte"
+  ],
+  "documents": [
+    {
+      "id": "tds",
+      "title": "Bambu Filament Technical Data Sheet V1.0, PETG Matte",
+      "file": "tds/bambu-petg-matte-tds-v1.0.pdf",
+      "url": "https://store.bblcdn.eu/s8/default/240fb0c791fb4903a9d72934895e9a16/PETG_Matte.pdf",
+      "sha256": "de3f989980fc583a7b2e0a287bb8972e03b503199189ef792dfed224320ece01"
+    }
+  ],
+  "specimenNote": "Infill density 100 %.",
+  "properties": {
+    "density": {
+      "value": 1.37,
+      "unit": "g/cm³",
+      "method": "ISO 1183",
+      "source": "tds",
+      "page": 2
+    },
+    "youngsModulusXY": {
+      "value": 3349,
+      "spread": 130,
+      "unit": "MPa",
+      "method": "ISO 527, GB/T 1040",
+      "source": "tds",
+      "page": 3
+    },
+    "youngsModulusZ": {
+      "value": 3174,
+      "spread": 50,
+      "unit": "MPa",
+      "method": "ISO 527, GB/T 1040",
+      "source": "tds",
+      "page": 3
+    },
+    "tensileStrengthXY": {
+      "value": 42.9,
+      "spread": 1,
+      "unit": "MPa",
+      "method": "ISO 527, GB/T 1040",
+      "source": "tds",
+      "page": 3
+    },
+    "tensileStrengthZ": {
+      "value": 30.1,
+      "spread": 1,
+      "unit": "MPa",
+      "method": "ISO 527, GB/T 1040",
+      "source": "tds",
+      "page": 3
+    },
+    "elongationAtBreakXY": {
+      "value": 13.8,
+      "spread": 2.6,
+      "unit": "%",
+      "method": "ISO 527, GB/T 1040",
+      "source": "tds",
+      "page": 3
+    },
+    "elongationAtBreakZ": {
+      "value": 6.5,
+      "spread": 0.5,
+      "unit": "%",
+      "method": "ISO 527, GB/T 1040",
+      "source": "tds",
+      "page": 3
+    },
+    "bendingModulusXY": {
+      "value": 1995,
+      "spread": 20,
+      "unit": "MPa",
+      "method": "ISO 178, GB/T 9341",
+      "source": "tds",
+      "page": 3
+    },
+    "bendingModulusZ": {
+      "value": 1750,
+      "spread": 46,
+      "unit": "MPa",
+      "method": "ISO 178, GB/T 9341",
+      "source": "tds",
+      "page": 3
+    },
+    "bendingStrengthXY": {
+      "value": 65,
+      "spread": 2.5,
+      "unit": "MPa",
+      "method": "ISO 178, GB/T 9341",
+      "source": "tds",
+      "page": 3
+    },
+    "bendingStrengthZ": {
+      "value": 47,
+      "spread": 2.3,
+      "unit": "MPa",
+      "method": "ISO 178, GB/T 9341",
+      "source": "tds",
+      "page": 3
+    },
+    "impactStrengthXY": {
+      "value": 32.6,
+      "spread": 4.1,
+      "unit": "kJ/m²",
+      "method": "ISO 179, GB/T 1043",
+      "source": "tds",
+      "page": 3
+    },
+    "impactStrengthZ": {
+      "value": 10,
+      "spread": 1.5,
+      "unit": "kJ/m²",
+      "method": "ISO 179, GB/T 1043",
+      "source": "tds",
+      "page": 3
+    },
+    "poissonRatio": {
+      "value": 0.38,
+      "unit": "",
+      "assumed": "The data sheet gives none; 0.38 is usual for PETG."
+    },
+    "glassTransitionTemperature": {
+      "value": 71,
+      "unit": "°C",
+      "method": "DSC, 10 °C/min",
+      "source": "tds",
+      "page": 2
+    },
+    "nozzleTemperatureMin": {
+      "value": 230,
+      "unit": "°C",
+      "source": "tds",
+      "page": 1
+    },
+    "nozzleTemperatureMax": {
+      "value": 260,
+      "unit": "°C",
+      "source": "tds",
+      "page": 1
+    },
+    "specimenNozzleTemperature": {
+      "value": 245,
+      "unit": "°C",
+      "source": "tds",
+      "page": 3
+    },
+    "specimenBedTemperature": {
+      "value": 70,
+      "unit": "°C",
+      "source": "tds",
+      "page": 3
+    },
+    "specimenPrintSpeed": {
+      "value": 221,
+      "unit": "mm/s",
+      "source": "tds",
+      "page": 3
+    }
+  }
+}

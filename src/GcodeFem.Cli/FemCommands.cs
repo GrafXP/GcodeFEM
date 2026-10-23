@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Numerics;
 using GcodeFem.Core.Fem;
+using GcodeFem.Core.Gcode;
 using GcodeFem.Core.Geometry;
 using GcodeFem.Core.Study;
 
@@ -27,7 +28,7 @@ static class FemCommands
     {
         var study = commandLine.Option("study") is { } path ? StudyFile.Load(path) : null;
         var (result, toolpath) = await SliceCommands.SliceAndParse(commandLine, study);
-        var material = new IsotropicMaterial(commandLine.Number("E", IsotropicMaterial.Pla.YoungsModulus), commandLine.Number("nu", IsotropicMaterial.Pla.PoissonRatio));
+        var material = Material(commandLine, toolpath);
 
         var watch = Stopwatch.StartNew();
         var grid = Voxelizer.Voxelize(toolpath, result.Placement, result.PrintMesh.Bounds);
@@ -42,19 +43,35 @@ static class FemCommands
             var force = Text.Triple(commandLine.Option("force") ?? "0,0,-100", "force");
             var bounds = grid.OccupiedBounds(minFill); // the cells' own outer faces, so clamp and load land on node planes
             loadCase = LoadCase.ClampAndPush(bounds, axis, fixMax, force);
-            Console.WriteLine($"load case    clamp {commandLine.Option("fix") ?? "zmin"} face, {Text.Format(force)} N on the opposite face; E {material.YoungsModulus:0} MPa, nu {material.PoissonRatio}");
+            Console.WriteLine($"load case    clamp {commandLine.Option("fix") ?? "zmin"} face, {Text.Format(force)} N on the opposite face");
         }
         else
         {
             var chosen = StudyCommands.Case(study, commandLine.Option("case"));
             loadCase = InterfaceMapper.Map(result.PrintMesh, result.Placement.Rotation, grid.Pitch, study.Interfaces, chosen);
-            Console.WriteLine($"load case    '{chosen.Name}' of {Path.GetFileName(commandLine.Option("study"))}; E {material.YoungsModulus:0} MPa, nu {material.PoissonRatio}");
+            Console.WriteLine($"load case    '{chosen.Name}' of {Path.GetFileName(commandLine.Option("study"))}");
             foreach (var item in study.Interfaces)
                 Console.WriteLine($"  {item.Name,-16} {item.Kind,-9} {(item.Kind.IsLoad() ? StudyCommands.Describe(item.Kind, chosen.Of(item)) : "")}");
         }
         Console.WriteLine($"cells        grid {grid.SizeX} x {grid.SizeY} x {grid.SizeZ}, {grid.BlockCount} blocks of {CellGrid.BlockSize}^3; " +
                           $"voxelized in {voxelized.TotalSeconds:0.00} s, {grid.TotalVolume:0.0} mm3 deposited, {grid.LostVolume:0.000} mm3 outside the grid");
         return new Problem(grid, material, loadCase, minFill);
+    }
+
+    /// <summary>
+    /// The stiffness to solve with: that of the material of the filament the part was sliced with
+    /// (or of --material), unless --E and --nu say otherwise.
+    /// </summary>
+    static IsotropicMaterial Material(CommandLine commandLine, Toolpath toolpath)
+    {
+        var match = MaterialCommands.For(commandLine, toolpath);
+        var overridden = commandLine.Option("E") is not null || commandLine.Option("nu") is not null;
+        // Given both numbers, the material need not have any.
+        var own = commandLine.Option("E") is not null && commandLine.Option("nu") is not null ? default : match.Material.Isotropic();
+        var material = new IsotropicMaterial(commandLine.Number("E", own.YoungsModulus), commandLine.Number("nu", own.PoissonRatio));
+        Console.WriteLine();
+        MaterialCommands.Print(match, material.YoungsModulus, material.PoissonRatio, overridden);
+        return material;
     }
 
     /// <summary>What each interface of a study got hold of on the cells: how many cell faces, their area, and the force that arrives.</summary>

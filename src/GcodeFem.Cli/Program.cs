@@ -18,6 +18,7 @@ try
         "solve" when commandLine.Positional.Count == 1 || commandLine.Flag("study") => await FemCommands.Solve(commandLine),
         "adapt" when commandLine.Positional.Count == 1 || commandLine.Flag("study") => await AdaptCommands.Adapt(commandLine),
         "study" when commandLine.Positional.Count >= 2 => StudyCommands.Run(commandLine),
+        "material" when commandLine.Positional.Count >= 1 => MaterialCommands.Run(commandLine),
         "bench" => commandLine.Flag("adaptive") ? AdaptCommands.Bench(commandLine) : FemCommands.Bench(commandLine),
         _ => Usage(),
     };
@@ -46,16 +47,27 @@ static int Usage()
           gcodefem study add <study.json> --name <name> [--kind fixed|sliding|bolthole|force|pressure|bearing] [--at "x,y,z;x,y,z"]
                              [--angle 20] [--free-along] [--case <name>] [--force x,y,z | --normal-force n | --pressure p]
           gcodefem study show <study.json>
+          gcodefem material list [--machine <name>] [--all]
+          gcodefem material show <name>
+          gcodefem material import <tds.pdf> [--name <name>] [--type <type>] [--filaments "a;b"] [--stand-in] [--url <where from>]
+                                   [--replace] [--dry-run]
           gcodefem sample bracket <out.stl> [--leg 40] [--width 10] [--height 8] [--holes 2 --hole 5]
           gcodefem sample beam <out.stl> [--length 60] [--width 10] [--height 10]
 
         slice options:  --rot x,y,z (degrees, about X then Y then Z) --filament <name> --process <name> --machine <name>
                         Machine, process and filament default to the current Bambu Studio selection.
-        load options:   --fix zmin --force 0,0,-100 --E 2500 --nu 0.35
+        load options:   --fix zmin --force 0,0,-100 [--material <name>] [--E 2500] [--nu 0.35]
                         Clamps one outer face of the printed cells (print frame: xmin, xmax, ymin, ymax, zmin = bed side,
                         zmax) and spreads --force (N, print frame) over the opposite face.
         octree options: --level auto|0..5 --k 2 --buffer 1 --energy 0.9 --change 0.03 --passes 10 --max-dofs n --no-interfaces
                         Coarse elements hold (2^level)^3 cells; cells stressed above peak / k end up at bead resolution.
+
+        The stiffness is that of the filament's material: the material file that names the filament, else the one that
+        stands in for the filament's type, else a generic one, with a warning for the last two. --material names
+        another, --E and --nu give the numbers directly. --materials <folder> reads the materials from elsewhere.
+        material list shows the materials and which one each filament preset gets; material import reads a technical
+        data sheet (Bambu Lab's layout), shows every value with its page and saves it with a copy of the sheet.
+        --stand-in makes the material the one used for every filament of its type that has none of its own.
 
         A study holds the model, how it is printed, its interfaces (the faces where it is held or loaded) and load cases.
         study new --lay turns the model so that its face at that point (model coordinates) lies on the bed.

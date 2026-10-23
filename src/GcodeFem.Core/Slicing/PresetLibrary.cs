@@ -91,7 +91,7 @@ public sealed class PresetLibrary
             Merge(result, ResolveCached(parent, visiting));
         foreach (var include in Includes(own))
             Merge(result, ResolveCached(include, visiting));
-        Merge(result, own);
+        Merge(result, own, inheritNil: Get(name).IsUser);
         result.Remove("inherits");
         result.Remove("include");
 
@@ -145,11 +145,27 @@ public sealed class PresetLibrary
     static string? Text(JsonObject json, string key) =>
         json[key] is JsonValue value && value.TryGetValue<string>(out var text) ? text : null;
 
-    static void Merge(JsonObject target, JsonObject source)
+    /// <summary>
+    /// Lays <paramref name="source"/> over <paramref name="target"/>, key by key.
+    /// </summary>
+    /// <param name="inheritNil">
+    /// For the user's own presets. Bambu Studio keeps a list setting of theirs with one value per
+    /// nozzle variant of the printer and writes "nil" for the variants the user did not set
+    /// (nozzle_temperature ["230", "nil"]): those are as inherited. Left in, the CLI refuses the
+    /// preset ("Invalid parameter value"). A system preset's "nil" stays: there it says that the
+    /// filament leaves a setting to the printer.
+    /// </param>
+    public static void Merge(JsonObject target, JsonObject source, bool inheritNil = false)
     {
         foreach (var (key, value) in source)
-            target[key] = value?.DeepClone();
+        {
+            if (inheritNil && value is JsonArray own && own.Any(IsNil) && target[key] is JsonArray { Count: > 0 } inherited)
+                target[key] = new JsonArray([.. own.Select((item, n) => (IsNil(item) ? inherited[Math.Min(n, inherited.Count - 1)] : item)?.DeepClone())]);
+            else target[key] = value?.DeepClone();
+        }
     }
+
+    static bool IsNil(JsonNode? node) => node is JsonValue value && value.TryGetValue<string>(out var text) && text == "nil";
 
     static JsonObject ReadObject(string path) =>
         JsonNode.Parse(File.ReadAllBytes(path)) as JsonObject ?? throw new InvalidDataException($"'{path}' is not a JSON object.");

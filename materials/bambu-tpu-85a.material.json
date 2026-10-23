@@ -1,0 +1,109 @@
+{
+  "format": 1,
+  "name": "Bambu TPU 85A",
+  "vendor": "Bambu Lab",
+  "type": "TPU",
+  "filaments": [
+    "Bambu TPU 85A"
+  ],
+  "documents": [
+    {
+      "id": "tds",
+      "title": "Bambu Filament Technical Data Sheet V1.0, TPU 85A",
+      "file": "tds/bambu-tpu-85a-tds-v1.0.pdf",
+      "url": "https://cdn.shopify.com/s/files/1/0645/5876/0155/files/Bambu_TPU_85A_Technical_Data_Sheet_a7233668-497b-487f-af8a-3adb49fafaa1.pdf",
+      "sha256": "70f480e450f416c4df7a0a0445c4fb356da782382c4308bddcb76ae4b401e4ae"
+    }
+  ],
+  "specimenNote": "Infill density 100 %. All the specimens were printed at the following settings: Nozzle Temperature = 225 °C, Printing Speed = 34 mm/s, Bed Temperature = 35 °C, Infill Density= 100%. All the specimens were dried at 70 °C for 12 h before testing.",
+  "properties": {
+    "density": {
+      "value": 1.18,
+      "unit": "g/cm³",
+      "method": "ISO 1183",
+      "source": "tds",
+      "page": 2
+    },
+    "youngsModulusXY": {
+      "value": 6.8,
+      "spread": 0.7,
+      "unit": "MPa",
+      "method": "ISO 527, GB/T 1040",
+      "source": "tds",
+      "page": 2
+    },
+    "youngsModulusZ": {
+      "value": 5.2,
+      "spread": 0.6,
+      "unit": "MPa",
+      "method": "ISO 527, GB/T 1040",
+      "source": "tds",
+      "page": 2
+    },
+    "tensileStrengthXY": {
+      "value": 12,
+      "spread": 0.8,
+      "unit": "MPa",
+      "method": "ISO 527, GB/T 1040",
+      "source": "tds",
+      "page": 2
+    },
+    "tensileStrengthZ": {
+      "value": 10.5,
+      "spread": 0.6,
+      "unit": "MPa",
+      "method": "ISO 527, GB/T 1040",
+      "source": "tds",
+      "page": 2
+    },
+    "impactStrengthXY": {
+      "value": 124.3,
+      "unit": "kJ/m²",
+      "method": "ISO 179, GB/T 1043",
+      "source": "tds",
+      "page": 2
+    },
+    "impactStrengthZ": {
+      "value": 88.5,
+      "unit": "kJ/m²",
+      "method": "ISO 179, GB/T 1043",
+      "source": "tds",
+      "page": 2
+    },
+    "poissonRatio": {
+      "value": 0.48,
+      "unit": "",
+      "assumed": "The data sheet gives none; 0.48 is usual for TPU."
+    },
+    "nozzleTemperatureMin": {
+      "value": 200,
+      "unit": "°C",
+      "source": "tds",
+      "page": 1
+    },
+    "nozzleTemperatureMax": {
+      "value": 250,
+      "unit": "°C",
+      "source": "tds",
+      "page": 1
+    },
+    "specimenNozzleTemperature": {
+      "value": 225,
+      "unit": "°C",
+      "source": "tds",
+      "page": 3
+    },
+    "specimenBedTemperature": {
+      "value": 35,
+      "unit": "°C",
+      "source": "tds",
+      "page": 3
+    },
+    "specimenPrintSpeed": {
+      "value": 34,
+      "unit": "mm/s",
+      "source": "tds",
+      "page": 3
+    }
+  }
+}

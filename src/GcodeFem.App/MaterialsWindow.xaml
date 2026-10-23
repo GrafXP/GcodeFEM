@@ -1,0 +1,131 @@
+<Window x:Class="GcodeFem.App.MaterialsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Materials" Width="1320" Height="840" MinWidth="900" MinHeight="560" WindowStartupLocation="CenterOwner">
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="Visible" />
+        <Style x:Key="Hint" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#FF52514E" />
+            <Setter Property="TextWrapping" Value="Wrap" />
+        </Style>
+        <Style x:Key="Cell" TargetType="TextBlock">
+            <Setter Property="Margin" Value="4,2" />
+            <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+        </Style>
+        <Style x:Key="CellEdit" TargetType="TextBox">
+            <Setter Property="Padding" Value="2,0" />
+            <Setter Property="BorderThickness" Value="0" />
+        </Style>
+    </Window.Resources>
+
+    <DockPanel Background="{DynamicResource {x:Static SystemColors.WindowBrushKey}}">
+        <!-- The library. Unsaved changes in the form lock it, so that picking another material cannot lose them. -->
+        <DockPanel DockPanel.Dock="Left" Width="260" Margin="10,10,0,10">
+            <TextBlock DockPanel.Dock="Top" Style="{StaticResource Hint}" Margin="0,0,0,6" Text="{Binding Directory, StringFormat='The material files in {0}'}" />
+            <StackPanel DockPanel.Dock="Bottom" Margin="0,8,0,0">
+                <Button Content="Import a data sheet…" Click="Import_Click" Padding="10,4" IsEnabled="{Binding IsUnchanged}"
+                        ToolTip="Reads a technical data sheet (PDF) into the form. Bambu Lab's sheets are filled in by themselves; others are typed in with the sheet alongside." />
+                <Button Content="New, to fill in by hand" Command="{Binding NewCommand}" Padding="10,4" Margin="0,4,0,0" IsEnabled="{Binding IsUnchanged}" />
+            </StackPanel>
+            <ListBox ItemsSource="{Binding Materials}" SelectedItem="{Binding Selected}" IsEnabled="{Binding IsUnchanged}"
+                     HorizontalContentAlignment="Stretch" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                <ListBox.ItemTemplate>
+                    <DataTemplate>
+                        <StackPanel Margin="0,2">
+                            <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                            <TextBlock Text="{Binding Note}" Foreground="#FF52514E" TextTrimming="CharacterEllipsis" />
+                        </StackPanel>
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+            </ListBox>
+        </DockPanel>
+
+        <DockPanel Margin="12,10,10,10">
+            <DockPanel DockPanel.Dock="Bottom" Margin="0,8,0,0">
+                <Button DockPanel.Dock="Right" Content="Close" Click="Close_Click" Padding="14,4" Margin="6,0,0,0" VerticalAlignment="Bottom" />
+                <Button DockPanel.Dock="Right" Content="Discard changes" Command="{Binding DiscardCommand}" Padding="10,4" Margin="6,0,0,0" VerticalAlignment="Bottom" />
+                <Button DockPanel.Dock="Right" Content="Save" Command="{Binding SaveCommand}" Padding="18,4" Margin="6,0,0,0" VerticalAlignment="Bottom" IsDefault="True" />
+                <ScrollViewer VerticalScrollBarVisibility="Auto" MaxHeight="96">
+                    <TextBlock Text="{Binding Message}" TextWrapping="Wrap">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding MessageIsError}" Value="True">
+                                        <Setter Property="Foreground" Value="#FFB3261E" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                </ScrollViewer>
+            </DockPanel>
+
+            <Grid DockPanel.Dock="Top">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="110" />
+                    <ColumnDefinition />
+                    <ColumnDefinition Width="60" />
+                    <ColumnDefinition Width="170" />
+                    <ColumnDefinition Width="50" />
+                    <ColumnDefinition Width="130" />
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition />
+                    <RowDefinition />
+                    <RowDefinition />
+                    <RowDefinition />
+                </Grid.RowDefinitions>
+                <TextBlock Text="Name" VerticalAlignment="Center" />
+                <TextBox Grid.Column="1" Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}" Margin="0,3" />
+                <TextBlock Grid.Column="2" Text="Vendor" VerticalAlignment="Center" Margin="12,0,0,0" />
+                <TextBox Grid.Column="3" Text="{Binding Vendor, UpdateSourceTrigger=PropertyChanged}" Margin="0,3" />
+                <TextBlock Grid.Column="4" Text="Type" VerticalAlignment="Center" Margin="12,0,0,0" ToolTip="The filament type as Bambu Studio names it: PLA, PETG, PA-CF, …" />
+                <TextBox Grid.Column="5" Text="{Binding Type, UpdateSourceTrigger=PropertyChanged}" Margin="0,3" ToolTip="The filament type as Bambu Studio names it: PLA, PETG, PA-CF, …" />
+
+                <TextBlock Grid.Row="1" Text="For the filaments" VerticalAlignment="Center" />
+                <TextBox Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="5" Text="{Binding Filaments, UpdateSourceTrigger=PropertyChanged}" Margin="0,3"
+                         ToolTip="The filaments as Bambu Studio names them, several separated by a semicolon. A name without the printer (&quot;Bambu PLA Basic&quot;) covers that filament on every printer; one with it (&quot;eSun PLA+ @A1 max&quot;) covers that preset alone." />
+                <CheckBox Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="5" Content="{Binding StandInText}" IsChecked="{Binding StandsInForType}" Margin="0,4"
+                          ToolTip="A filament that no material names is solved with the material that stands in for its type, and the result says so. Only one material can stand in for a type." />
+
+                <TextBlock Grid.Row="3" Text="Source" VerticalAlignment="Center" />
+                <DockPanel Grid.Row="3" Grid.Column="1" Grid.ColumnSpan="5" Margin="0,3">
+                    <Button DockPanel.Dock="Right" Content="Open the data sheet" Click="OpenDocument_Click" Padding="10,3" Margin="8,0,0,0"
+                            Visibility="{Binding HasDocument, Converter={StaticResource Visible}}" />
+                    <TextBlock Text="{Binding DocumentText}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                </DockPanel>
+            </Grid>
+
+            <DockPanel DockPanel.Dock="Bottom" Margin="0,8,0,0">
+                <TextBlock DockPanel.Dock="Left" Width="110" Text="The specimens" VerticalAlignment="Top" Margin="0,3,0,0"
+                           ToolTip="How the specimens behind the values were printed and treated. The values across the layers hold for these conditions." />
+                <TextBox Text="{Binding SpecimenNote, UpdateSourceTrigger=PropertyChanged}" TextWrapping="Wrap" AcceptsReturn="False" MinLines="2" MaxLines="3"
+                         VerticalScrollBarVisibility="Auto" />
+            </DockPanel>
+            <TextBlock DockPanel.Dock="Bottom" Style="{StaticResource Hint}" Margin="0,6,0,0"
+                       Text="Every value says where it is from: a source (&quot;tds&quot; is the data sheet above) with its page, or the reason why it is assumed, never both. A row without a value is a property the material does not give. &quot;In the plane&quot; is measured on a specimen printed lying flat, &quot;across the layers&quot; on one printed standing up." />
+
+            <DataGrid ItemsSource="{Binding Rows}" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False" CanUserSortColumns="False"
+                      CanUserReorderColumns="False" HeadersVisibility="Column" SelectionMode="Single" SelectionUnit="Cell" Margin="0,8,0,0"
+                      GridLinesVisibility="Horizontal" HorizontalGridLinesBrush="#FFE1E0D9" RowHeight="24">
+                <DataGrid.Columns>
+                    <DataGridTextColumn Header="Property" Binding="{Binding Label, Mode=OneWay}" IsReadOnly="True" Width="250" ElementStyle="{StaticResource Cell}" />
+                    <DataGridTextColumn Header="Value" Binding="{Binding Value, UpdateSourceTrigger=PropertyChanged}" Width="70" ElementStyle="{StaticResource Cell}" EditingElementStyle="{StaticResource CellEdit}" />
+                    <DataGridTextColumn Header="±" Binding="{Binding Spread, UpdateSourceTrigger=PropertyChanged}" Width="50" ElementStyle="{StaticResource Cell}" EditingElementStyle="{StaticResource CellEdit}" />
+                    <DataGridTextColumn Header="Unit" Binding="{Binding Unit, Mode=OneWay}" IsReadOnly="True" Width="52" ElementStyle="{StaticResource Cell}" />
+                    <DataGridTextColumn Header="Test method" Binding="{Binding Method, UpdateSourceTrigger=PropertyChanged}" Width="140" ElementStyle="{StaticResource Cell}" EditingElementStyle="{StaticResource CellEdit}" />
+                    <DataGridTextColumn Header="Source" Binding="{Binding Source, UpdateSourceTrigger=PropertyChanged}" Width="70" ElementStyle="{StaticResource Cell}" EditingElementStyle="{StaticResource CellEdit}" />
+                    <DataGridTextColumn Header="Page" Binding="{Binding Page, UpdateSourceTrigger=PropertyChanged}" Width="44" ElementStyle="{StaticResource Cell}" EditingElementStyle="{StaticResource CellEdit}" />
+                    <DataGridTextColumn Header="Or assumed, because" Binding="{Binding Assumed, UpdateSourceTrigger=PropertyChanged}" Width="*" EditingElementStyle="{StaticResource CellEdit}">
+                        <DataGridTextColumn.ElementStyle>
+                            <!-- A reason is a sentence; what does not fit the cell is in its tooltip. -->
+                            <Style TargetType="TextBlock" BasedOn="{StaticResource Cell}">
+                                <Setter Property="ToolTip" Value="{Binding Assumed}" />
+                            </Style>
+                        </DataGridTextColumn.ElementStyle>
+                    </DataGridTextColumn>
+                </DataGrid.Columns>
+            </DataGrid>
+        </DockPanel>
+    </DockPanel>
+</Window>

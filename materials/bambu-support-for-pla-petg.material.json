@@ -1,0 +1,44 @@
+{
+  "format": 1,
+  "name": "Bambu Support For PLA/PETG",
+  "vendor": "Bambu Lab",
+  "type": "PLA",
+  "filaments": [
+    "Bambu Support For PLA/PETG"
+  ],
+  "documents": [
+    {
+      "id": "tds",
+      "title": "Bambu Filament Technical Data Sheet V1.0, Support For PLA/PETG",
+      "file": "tds/bambu-support-for-pla-petg-tds-v1.0.pdf",
+      "url": "https://store.bblcdn.com/d09d55778d42495db121e28a3b04a4c5.pdf",
+      "sha256": "a2f6e88e520e18592333c35da3fd43b89838d14ee6934b617b326fd017e62d54"
+    }
+  ],
+  "properties": {
+    "density": {
+      "value": 1.28,
+      "unit": "g/cm³",
+      "method": "ISO 1183",
+      "source": "tds",
+      "page": 2
+    },
+    "poissonRatio": {
+      "value": 0.35,
+      "unit": "",
+      "assumed": "The data sheet gives none; 0.35 is usual for rigid thermoplastics."
+    },
+    "nozzleTemperatureMin": {
+      "value": 190,
+      "unit": "°C",
+      "source": "tds",
+      "page": 1
+    },
+    "nozzleTemperatureMax": {
+      "value": 240,
+      "unit": "°C",
+      "source": "tds",
+      "page": 1
+    }
+  }
+}

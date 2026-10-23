@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Numerics;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json.Nodes;
 using GcodeFem.Core.Geometry;
 
 namespace GcodeFem.Core.Slicing;
@@ -10,6 +11,7 @@ namespace GcodeFem.Core.Slicing;
 public sealed record SliceRequest(TriangleMesh Mesh, Matrix4x4 Rotation, string Machine, string Process, string Filament);
 
 /// <param name="PrintMesh">The model rotated into the print frame, exactly as handed to the slicer.</param>
+/// <param name="Plate">The build plate that was named to the slicer; null if it was left to assume its Cool Plate.</param>
 public sealed record SliceResult(
     string Directory,
     string GcodePath,
@@ -17,7 +19,8 @@ public sealed record SliceResult(
     Placement Placement,
     TriangleMesh PrintMesh,
     bool FromCache,
-    TimeSpan Elapsed);
+    TimeSpan Elapsed,
+    string? Plate = null);
 
 /// <summary>
 /// Runs the Bambu Studio CLI on one rotated part. Results are cached by a hash of everything that
@@ -43,8 +46,10 @@ public sealed class BambuSlicer(BambuInstallation bambu, PresetLibrary presets, 
         var machine = presets.ResolveJson(request.Machine);
         var process = presets.ResolveJson(request.Process);
         var filament = presets.ResolveJson(request.Filament);
+        var plate = PlateFor(presets.Resolve(request.Filament));
 
-        var directory = Path.Combine(cacheDirectory, CacheKey(stl, machine, process, filament));
+        // A plate that was not named leaves the key as it was before plates were named, so those slices stay in the cache.
+        var directory = Path.Combine(cacheDirectory, plate is null ? CacheKey(stl, machine, process, filament) : CacheKey(stl, machine, process, filament, plate));
         var fromCache = useCache && File.Exists(Path.Combine(directory, CompleteMarker));
         if (!fromCache)
         {
@@ -54,7 +59,7 @@ public sealed class BambuSlicer(BambuInstallation bambu, PresetLibrary presets, 
             await File.WriteAllTextAsync(Path.Combine(directory, "machine.json"), machine, cancellationToken);
             await File.WriteAllTextAsync(Path.Combine(directory, "process.json"), process, cancellationToken);
             await File.WriteAllTextAsync(Path.Combine(directory, "filament.json"), filament, cancellationToken);
-            await RunAsync(directory, cancellationToken);
+            await RunAsync(directory, plate, cancellationToken);
         }
 
         var report = SlicerReport.Read(Path.Combine(directory, ResultFile));
@@ -67,10 +72,32 @@ public sealed class BambuSlicer(BambuInstallation bambu, PresetLibrary presets, 
         var placement = Placement.FromSlice(request.Rotation, printMesh.Bounds, report.ObjectBounds);
         if (!fromCache) await File.WriteAllTextAsync(Path.Combine(directory, CompleteMarker), DateTime.UtcNow.ToString("O"), cancellationToken);
 
-        return new SliceResult(directory, gcode, report, placement, printMesh, fromCache, watch.Elapsed);
+        return new SliceResult(directory, gcode, report, placement, printMesh, fromCache, watch.Elapsed, plate);
     }
 
-    async Task RunAsync(string directory, CancellationToken cancellationToken)
+    /// <summary>
+    /// The build plate to name to the slicer for a filament, given its flattened preset. The CLI
+    /// assumes the Cool Plate and refuses a filament that does not print on it (PETG, ABS, PC and
+    /// most others: plate temperature 0). Such a filament gets the first plate it does print on,
+    /// the textured one first, as it comes with the printers. A filament that prints on the Cool
+    /// Plate gets none named (null), as before. The plate chosen in Bambu Studio itself is not read.
+    /// </summary>
+    public static string? PlateFor(JsonObject filament)
+    {
+        static bool PrintsOn(JsonObject settings, string key) =>
+            PresetLibrary.First(settings, key) is { } text && double.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var temperature) && temperature > 0;
+
+        if (PrintsOn(filament, "cool_plate_temp")) return null;
+        foreach (var (key, plate) in new[]
+                 {
+                     ("textured_plate_temp", "Textured PEI Plate"), ("hot_plate_temp", "High Temp Plate"),
+                     ("eng_plate_temp", "Engineering Plate"), ("supertack_plate_temp", "Supertack Plate"),
+                 })
+            if (PrintsOn(filament, key)) return plate;
+        return null;
+    }
+
+    async Task RunAsync(string directory, string? plate, CancellationToken cancellationToken)
     {
         var start = DateTime.UtcNow;
         var info = new ProcessStartInfo(bambu.ExecutablePath)
@@ -79,18 +106,19 @@ public sealed class BambuSlicer(BambuInstallation bambu, PresetLibrary presets, 
             CreateNoWindow = true,
             WorkingDirectory = directory,
         };
-        foreach (var argument in new[]
-                 {
-                     "--debug", "2",
-                     "--arrange", "1",
-                     "--load-settings", $"{Path.Combine(directory, "machine.json")};{Path.Combine(directory, "process.json")}",
-                     "--load-filaments", Path.Combine(directory, "filament.json"),
-                     "--slice", "0",
-                     "--outputdir", directory,
-                     "--export-3mf", "plate.gcode.3mf",
-                     Path.Combine(directory, ModelFile),
-                 })
-            info.ArgumentList.Add(argument);
+        string[] arguments =
+        [
+            "--debug", "2",
+            "--arrange", "1",
+            .. plate is null ? [] : new[] { "--curr-bed-type", plate },
+            "--load-settings", $"{Path.Combine(directory, "machine.json")};{Path.Combine(directory, "process.json")}",
+            "--load-filaments", Path.Combine(directory, "filament.json"),
+            "--slice", "0",
+            "--outputdir", directory,
+            "--export-3mf", "plate.gcode.3mf",
+            Path.Combine(directory, ModelFile),
+        ];
+        foreach (var argument in arguments) info.ArgumentList.Add(argument);
 
         using var process = Process.Start(info) ?? throw new SlicerException($"Could not start '{bambu.ExecutablePath}'.");
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);

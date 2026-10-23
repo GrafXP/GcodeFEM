@@ -1,0 +1,109 @@
+{
+  "format": 1,
+  "name": "Bambu TPU 95A",
+  "vendor": "Bambu Lab",
+  "type": "TPU",
+  "filaments": [
+    "Bambu TPU 95A"
+  ],
+  "documents": [
+    {
+      "id": "tds",
+      "title": "Bambu Filament Technical Data Sheet V3.0, TPU 95A",
+      "file": "tds/bambu-tpu-95a-tds-v3.0.pdf",
+      "url": "https://cdn.shopify.com/s/files/1/0645/5876/0155/files/Bambu_TPU_95A_Technical_Data_Sheet.pdf",
+      "sha256": "3c55328a8b93c89b93414638d6e13cd073c5f14a19bfee6f14af0e9955a7e1d6"
+    }
+  ],
+  "specimenNote": "Infill density 100 %. All the specimens were annealed and dried at 70 °C for 12 h before testing.",
+  "properties": {
+    "density": {
+      "value": 1.2,
+      "unit": "g/cm³",
+      "method": "ISO 1183",
+      "source": "tds",
+      "page": 2
+    },
+    "youngsModulusXY": {
+      "value": 9.2,
+      "spread": 0.4,
+      "unit": "MPa",
+      "method": "ISO 527, GB/T 1040",
+      "source": "tds",
+      "page": 2
+    },
+    "youngsModulusZ": {
+      "value": 7.8,
+      "spread": 0.5,
+      "unit": "MPa",
+      "method": "ISO 527, GB/T 1040",
+      "source": "tds",
+      "page": 2
+    },
+    "tensileStrengthXY": {
+      "value": 29.6,
+      "spread": 0.6,
+      "unit": "MPa",
+      "method": "ISO 527, GB/T 1040",
+      "source": "tds",
+      "page": 2
+    },
+    "tensileStrengthZ": {
+      "value": 23.2,
+      "spread": 0.5,
+      "unit": "MPa",
+      "method": "ISO 527, GB/T 1040",
+      "source": "tds",
+      "page": 2
+    },
+    "impactStrengthXY": {
+      "value": 125.2,
+      "unit": "kJ/m²",
+      "method": "ISO 179, GB/T 1043",
+      "source": "tds",
+      "page": 2
+    },
+    "impactStrengthZ": {
+      "value": 88.7,
+      "unit": "kJ/m²",
+      "method": "ISO 179, GB/T 1043",
+      "source": "tds",
+      "page": 2
+    },
+    "poissonRatio": {
+      "value": 0.48,
+      "unit": "",
+      "assumed": "The data sheet gives none; 0.48 is usual for TPU."
+    },
+    "nozzleTemperatureMin": {
+      "value": 220,
+      "unit": "°C",
+      "source": "tds",
+      "page": 1
+    },
+    "nozzleTemperatureMax": {
+      "value": 240,
+      "unit": "°C",
+      "source": "tds",
+      "page": 1
+    },
+    "specimenNozzleTemperature": {
+      "value": 230,
+      "unit": "°C",
+      "source": "tds",
+      "page": 3
+    },
+    "specimenBedTemperature": {
+      "value": 35,
+      "unit": "°C",
+      "source": "tds",
+      "page": 3
+    },
+    "specimenPrintSpeed": {
+      "value": 80,
+      "unit": "mm/s",
+      "source": "tds",
+      "page": 3
+    }
+  }
+}

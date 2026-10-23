@@ -114,6 +114,7 @@ static class SliceCommands
         Console.WriteLine($"slice        {result.Elapsed.TotalSeconds:0.0} s{(result.FromCache ? " (from cache)" : "")} -> {result.Directory}");
         Console.WriteLine($"  slicer     {Text.Duration(result.Report.PrintSeconds)}, {result.Report.FilamentGrams:0.00} g{(result.Report.Warning.Length > 0 ? $", warning: {result.Report.Warning}" : "")}");
         Console.WriteLine($"  placement  print frame + {Text.Format(result.Placement.BedOffset)} = bed");
+        if (result.Plate is { } plate) Console.WriteLine($"  plate      {plate}: this filament does not print on the Cool Plate that the slicer assumes otherwise");
 
         var watch = Stopwatch.StartNew();
         var toolpath = GcodeParser.Parse(result.GcodePath);

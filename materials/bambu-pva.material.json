@@ -1,0 +1,44 @@
+{
+  "format": 1,
+  "name": "Bambu PVA",
+  "vendor": "Bambu Lab",
+  "type": "PVA",
+  "filaments": [
+    "Bambu PVA"
+  ],
+  "documents": [
+    {
+      "id": "tds",
+      "title": "Bambu Filament Technical Data Sheet V1.0, PVA",
+      "file": "tds/bambu-pva-tds-v1.0.pdf",
+      "url": "https://store.bblcdn.com/s7/default/868930e5a44944258586caa250cc8143/Bambu_PVA_Technical_Data_Sheet.pdf",
+      "sha256": "7ca185263fec71442794b3f34409233557bd30995613b759e810532616fe955b"
+    }
+  ],
+  "properties": {
+    "density": {
+      "value": 1.27,
+      "unit": "g/cm³",
+      "method": "ISO 1183",
+      "source": "tds",
+      "page": 2
+    },
+    "poissonRatio": {
+      "value": 0.35,
+      "unit": "",
+      "assumed": "The data sheet gives none; 0.35 is usual for rigid thermoplastics."
+    },
+    "nozzleTemperatureMin": {
+      "value": 220,
+      "unit": "°C",
+      "source": "tds",
+      "page": 1
+    },
+    "nozzleTemperatureMax": {
+      "value": 250,
+      "unit": "°C",
+      "source": "tds",
+      "page": 1
+    }
+  }
+}

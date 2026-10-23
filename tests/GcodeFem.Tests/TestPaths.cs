@@ -7,6 +7,9 @@ static class TestPaths
 
     public static string Sample(string name) => Path.Combine(Root, "samples", name);
 
+    /// <summary>The material library that comes with the repository.</summary>
+    public static string Materials => Path.Combine(Root, "materials");
+
     static string FindRoot()
     {
         for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir != null; dir = dir.Parent)

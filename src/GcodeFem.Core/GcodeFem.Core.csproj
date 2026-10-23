@@ -7,6 +7,11 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
+  <ItemGroup>
+    <!-- Reads the text of technical data sheets (Materials/PdfText). -->
+    <PackageReference Include="PdfPig" Version="0.1.16" />
+  </ItemGroup>
+
   <!-- Built by native\build.cmd; without it LinearSolvers.Best() falls back to the C# PCG. -->
   <ItemGroup Condition="Exists('..\..\native\bin\AmgclBridge.dll')">
     <None Include="..\..\native\bin\AmgclBridge.dll" Link="AmgclBridge.dll" CopyToOutputDirectory="PreserveNewest" />

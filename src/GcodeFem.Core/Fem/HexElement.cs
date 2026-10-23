@@ -89,6 +89,6 @@ public readonly record struct IsotropicMaterial(double YoungsModulus, double Poi
 
     public double ShearModulus => YoungsModulus / (2 * (1 + PoissonRatio));
 
-    /// <summary>Generic PLA until M6 brings per-filament data from the TDS.</summary>
+    /// <summary>An ordinary PLA: for benchmarks and tests, and where a filament has no material data (Materials.Material.Generic).</summary>
     public static IsotropicMaterial Pla => new(2500, 0.35);
 }

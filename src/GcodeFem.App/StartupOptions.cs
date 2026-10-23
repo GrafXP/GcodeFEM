@@ -16,6 +16,7 @@ namespace GcodeFem.App;
 ///                [--colour feature|nozzletemperature|fan|speed|time|width|fill|interfaces|vonmises|displacement|interlayerstress|elementsize]
 ///                [--layers first-last] [--hide "sparse infill,top surface"] [--thin] [--pass n] [--scale-top percent]
 ///                [--deform 0..1] [--no-elements] [--look x,y,z] [--zoom factor]
+///                [--materials-window [name]] [--import-tds sheet.pdf]
 ///                [--screenshot file.png] [--size 1400x900] [--wait seconds]
 ///
 /// --fix and --force set up a quick load case: the model's face on that side of the print is fixed and the opposite
@@ -23,6 +24,8 @@ namespace GcodeFem.App;
 /// one; --name, --value and --click then apply to it. --value is what would be typed into the value field: a force is
 /// in the print's directions as the part is turned by --rot. --click picks faces in the model view as the mouse
 /// would, at pixels read off a screenshot of the window; --lay lays the face at such a pixel on the bed first.
+/// --materials-window opens the materials window, on the material of that name if one is given, and --import-tds
+/// reads a data sheet into its form (nothing is saved); the screenshot is then of that window.
 /// With --screenshot the app saves the picture and exits; its exit code is 1 if a step failed.
 /// </summary>
 sealed class StartupOptions

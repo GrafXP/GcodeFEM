@@ -65,9 +65,24 @@ Gotchas, all handled in code:
     templates (machine start/end/layer-change G-code live in separate "template"
     presets), then the preset's own keys.
   - User presets inherit from system presets and resolve the same way.
+  - **A user's preset holds "nil" where it leaves a list entry as inherited.** Bambu
+    Studio 2 keeps a list setting with one value per nozzle variant of the printer and
+    writes "nil" for the variants the user did not set (`nozzle_temperature: ["230",
+    "nil"]`). Handed on as it is, the CLI refuses the preset with "Invalid parameter
+    value(s)". `PresetLibrary.Merge` fills such an entry from what the preset inherits,
+    in user presets only: a system preset's "nil" says that the filament leaves the
+    setting to the printer, and stays. Found in M6.
 - **`extruder_offset`** (X1C: `0x2`) shifts every G-code Y by −2 mm relative to the bed.
   The parser adds it back, so segments are in true bed coordinates. Checked: bead
   centrelines sit exactly 0.210 mm (half a line width) inside the model on all four sides.
+- **The CLI assumes the Cool Plate** and refuses a filament that does not print on it
+  (PETG HF, ABS, ASA, PC, PA: their presets give that plate a temperature of 0): "Filaments
+  are not compatible with the plate type".
+  For such a filament `BambuSlicer` names a plate with `--curr-bed-type`: the first one
+  the filament prints on, the textured one first. A filament that prints on the Cool Plate
+  gets none named, so PLA slices exactly as before. Found in M6.
+  - The plate chosen in Bambu Studio is not read. `BambuStudio.conf` keeps it as a number
+    (`curr_bed_type: "4"`), and which plate that is could not be confirmed.
 - The exe is a GUI-subsystem binary, so `--help` prints nothing. Diagnose through the exit
   code, `result.json` and `%APPDATA%\BambuStudio\log`.
 - `--arrange 1` only translates: a 30×10×5 box kept its orientation, centred on the bed.
@@ -111,7 +126,7 @@ Support transition, Prime tower. Unknown types are reported and kept out of the 
 | 3D | **HelixToolkit.Wpf.SharpDX 3.1.2** (DirectX 11): handles millions of toolpath line segments, per-vertex result colours, clipping planes, hit-testing for face picking |
 | Linear solver | **AMGCL** (MIT, header-only C++, OpenMP) behind our own small C++ DLL, called through P/Invoke. Fallback: pure C# PCG. See §7. |
 | Native build | Visual Studio Build Tools 2026 (C++ workload) + CMake |
-| TDS import | PdfPig (PDF text extraction) |
+| TDS import | PdfPig 0.1.16 (PDF text extraction) |
 | Tests | xUnit |
 | Validation reference | CalculiX `ccx` (external) on small models |
 
@@ -530,6 +545,170 @@ weakest-spot marker and a colouring by governing mode.
   separately, which is exactly what §6 needs. Other vendors get manual entry with the PDF
   alongside.
 - **To collect:** TDS PDFs for the filaments actually printed. None were found on disk.
+  Bambu's own are in `materials/tds/` since M6; those of the other vendors' filaments
+  Martin prints (eSun, Sunlu, Prusament, …) are still to come.
+
+### What M6 built
+
+**A material file** (`materials/<name>.material.json`, read and written by `Core/Materials`)
+is a filament as the solver and the failure model need it:
+
+- its name, vendor and type (Bambu Studio's `filament_type`), the filaments it is for, and
+  whether it stands in for its type
+- the document its numbers are from: title, file (kept in `materials/tds/`), where it was
+  downloaded and its SHA-256
+- up to 21 properties, and a note on how the specimens were printed and treated, in the
+  sheet's words
+
+| Group | Properties |
+| --- | --- |
+| Stiffness | Young's modulus in the plane of the layers and across them; Poisson's ratio |
+| Strength | tensile strength, elongation at break, bending modulus and bending strength, each in the plane and across; impact strength in the plane (plain and notched) and across |
+| Other | density, glass transition temperature, lowest and highest nozzle temperature |
+| Specimens | the nozzle temperature, bed temperature and speed the specimens were printed at |
+
+"In the plane" (X-Y in Bambu's sheets) is measured on a specimen printed lying flat,
+"across the layers" (Z) on one printed standing up.
+
+**Every number says where it is from.** A value has a source (the id of the material's
+document, its page, and the test method as the sheet names it) or a reason why it is
+assumed. Never both and never neither: a file that breaks this is refused when it is read,
+and a material that breaks it is not saved.
+
+- The unit is written with every value and checked against the property's, so 2.5 typed
+  under "MPa" for 2.5 GPa cannot pass.
+- Poisson's ratio is the one number no sheet gives. It is assumed by filament type (PLA
+  0.35, PETG 0.38, ABS and ASA 0.35, PC 0.37, polyamides 0.39, TPU 0.48, anything else
+  0.35) and marked so.
+- A material that gives no Young's modulus is kept for what it does say (the support
+  filaments, PVA) and refused by the solver.
+
+**From a filament to its material** (`MaterialLibrary.Match`):
+
+| The filament | gets | and the user sees |
+| --- | --- | --- |
+| is named by a material file | that material | its numbers |
+| is not, but a material stands in for its type | that material | the same, with "stands in for it" beside it, in the print panel, the result and the CLI |
+| has neither | a generic PLA (E 2500 MPa, ν 0.35, all assumed) | the warning box of the result: the displacements are not this filament's |
+
+- A name without a printer ("Bambu PLA Basic") covers that filament's presets on every
+  printer ("Bambu PLA Basic @BBL X1C 0.2 nozzle"); a name with one covers that preset alone
+  and goes first.
+- Names are compared by their letters, digits and "+": a sheet's "ASA Aero" is the slicer's
+  "ASA-Aero", and "PLA Silk" is not "PLA Silk+".
+- **The solve takes the filament from the G-code's header** (`filament_settings_id`,
+  `filament_type`). So the material is that of the filament the part was sliced with, not
+  of whatever is selected by the time Solve is pressed.
+- Two materials that name one filament, or stand in for one type, are reported; the first
+  by name is used.
+
+**Reading a data sheet** (`PdfText`, `TdsImporter`, `BambuTds`):
+
+1. PdfPig gives the words of a page with their places. Words on one baseline make a line,
+   whatever order the file holds them in; that puts the cells of a table row side by side.
+   Two baselines count as one if they are closer than 0.3 of the letter size.
+2. The template for Bambu Lab's sheets has one pattern per row: label, test method, value,
+   ± spread, unit. Rows count only under the heading they belong to (the nozzle temperature
+   stands in two tables: the recommended range and what the specimens were printed at).
+3. Bambu Studio's own preset of the filament gives the name and the type, since those are
+   what a filament is matched by. It also carries one number of the sheet,
+   `impact_strength_z`, which is compared: a difference means another version of the sheet.
+4. The result is shown with what was not found. In the app it fills a form that is saved
+   only when the user says so; in the CLI the file is written and printed for looking over
+   (`--dry-run` writes nothing).
+
+Bambu has two layouts, and both are read:
+
+| Layout | Headed | Differences |
+| --- | --- | --- |
+| since 2022 (43 of the sheets) | "Bambu Filament – Technical Data Sheet V3.0" | the specimens' conditions in a table of their own, with a footnote on drying and annealing |
+| 2026 (PLA Pure, PETG Matte) | "TDS of Bambu PLA Pure" | charts beside the tables, some labels on two lines, and the specimens' conditions in a note beside the mechanical properties |
+
+What the files do that the template has to take:
+
+- Headings come out with their words run together ("PETGHF", "TechnicalDataSheetV1.0"),
+  so the name is taken from the sentence "…the performance of PETG HF material".
+- Full-width punctuation (，；（）) and another apostrophe in "Young's".
+- The impact strength in the plane is one cell with two values, plain and notched, on
+  lines above, beside or below the label.
+- "N / A", and bounds such as "> 650 %" for a specimen that did not break: neither is a
+  value. They are left out and named.
+- In the 2026 layout the file does not give all the letters of the note (no "°", no "fi").
+  Its numbers are taken (nozzle, bed, speed, infill); its text is left to the user, and
+  the import says so.
+- The footnote on the specimens is not always marked with a star. Of it, only the
+  sentences that begin "All the specimens…" are kept; the rest is advice on ovens.
+
+There is no template for another vendor yet. Their sheets are typed into the app's form,
+with the sheet open alongside.
+
+**The library: every Bambu Lab filament with a published sheet.** Martin asked for this on
+2026-10-08 in place of the two the milestone named. Bambu Studio 2.08 knows 51 filaments
+of Bambu's own; 45 have a sheet and are in `materials/`.
+
+- The sheets are the ones Bambu's store links on each filament's page (40). For filaments
+  that are no longer sold, and where a newer version than the store's was found, they are
+  the copies on Bambu's own Shopify CDN (PA-CF, PLA Tough, TPU 95A; PC and PLA Sparkle).
+  Of several versions the highest was taken. Every file records the link and the hash.
+- The check against Bambu Studio's presets: 33 agree. 5 differ (PETG Basic, PETG Matte,
+  PLA Tough+, PLA Translucent, TPU 85A); there the preset holds the number of an older
+  sheet or of a sibling filament. 7 sheets give no such number.
+- 808 numbers: 763 from the sheets with their page, 45 assumed (Poisson's ratio).
+- 5 have no stiffness: PVA and the four support filaments.
+- **No sheet was found for 6**: PLA Dynamic, PLA Impact, PLA Lite, PPA-GF, Support W and
+  Support G. They get the stand-in of their type like any other filament without data.
+- A test reads every sheet again and compares it with its material file, value by value.
+
+| Material | Sheet | E in the plane / across, MPa | Tensile strength in the plane / across, MPa |
+| --- | --- | --- | --- |
+| Bambu PLA Basic | V3.0 | 2580 ± 220 / 2060 ± 170 | 35 ± 4 / 31 ± 3 |
+| Bambu PETG HF | V1.0 | 1810 ± 190 / 1540 ± 130 | 34 ± 4 / 23 ± 4 |
+| Bambu PETG Basic | V3.0 | 2780 ± 65 / 2550 ± 100 | 51 ± 1 / 35 ± 6 |
+| Bambu ABS | V3.0 | 2200 / 1960 | 33 / 28 |
+| Bambu PAHT-CF | V3.0 | 3860 / 2180 | 92 / 47 |
+| Bambu TPU 95A HF | V1.0 | 9.8 / 7.4 | 27.3 / 22.3 |
+
+The stand-ins, one per filament type: PLA Basic for PLA, **PETG HF for PETG**, ABS, ASA,
+PC, TPU 95A HF for TPU, PAHT-CF for PA-CF, and the only material of its type for PLA-CF,
+PETG-CF, PET-CF, PA6-CF, PA-GF, ABS-GF, ASA-CF, PPA-CF, PPS-CF, PLA-AERO, ASA-AERO and
+TPU-AMS. PETG HF and not PETG Basic was Claude's choice: the stiffness in PETG Basic's
+sheet moved from 1460 to 2780 MPa between V2.0 and V3.0, and 1810 lies in the range usual
+for printed PETG. A tick in the materials window moves a stand-in.
+
+**What the solver does with a material, until M7:** the same stiffness in every direction,
+the one in the plane of the layers, with the assumed Poisson's ratio. Measured on the
+bracket of §10 ("Pull sideways"):
+
+| Filament | Material | Peak von Mises | Loaded face moves, along the force |
+| --- | --- | --- | --- |
+| Bambu PLA Basic | the numbers used until now (`--E 2500 --nu 0.35`) | 18.44 MPa | 0.975 mm |
+| Bambu PLA Basic | its own, E 2580 | 18.44 MPa | 0.945 mm |
+| eSun PLA+ | PLA Basic, standing in | 18.44 MPa | 0.945 mm |
+| Bambu PETG HF | its own, E 1810, ν 0.38 | 17.98 MPa | 1.374 mm |
+
+- **The stresses of a part loaded by forces do not depend on its stiffness** while that is
+  the same everywhere: 2500 → 2580 MPa changes the displacement by 2500 / 2580, to the three
+  digits shown, and the peak not at all. So until M7 brings stiffness that differs by direction, a material
+  moves the displacements only. PETG HF's peak differs because its slice does.
+- The strengths are in the files and unused until M8.
+
+**In the app.** The print panel says in a line what the selected filament will be solved
+with, in the colour of a caution if that is not its own material. "Materials…" opens the
+library: the materials on the left, a form on the right with one row per property (value,
+±, unit, test method, source, page, or the reason it is assumed). "Import a data sheet…"
+fills the form from a PDF, "Open the data sheet" shows the sheet beside it. Changes that
+are not saved lock the list, so picking another material cannot lose them.
+
+**In the CLI.** `gcodefem material list` shows the materials and what each filament preset
+gets, `material show <name>` every number with its source, `material import <tds.pdf>`
+makes a material from a sheet. `solve` and `adapt` print the material they use;
+`--material <name>` takes another, `--E` and `--nu` give the numbers directly.
+
+**What the sheets' numbers are, and are not.** The specimens were printed solid (100 %
+infill) at the temperatures and speeds the file records, dried, and for most filaments
+annealed before testing. A real part is not annealed and not solid. The numbers are what
+the plastic can do at best, most of all across the layers. Closing that gap is what the
+bond factor (M7) and the coupons (M10) are for.
 
 ---
 
@@ -642,8 +821,8 @@ they are picked. In the CLI it is `study new … --lay x,y,z`, with a point on t
   angles taken from a matrix lose their accuracy.
 - The face is the flat face around the clicked triangle, its normal averaged by area.
 
-Left for later: elastic supports, torque, gravity (it needs a density, which comes with
-the materials in M6), and solving several load cases on one matrix.
+Left for later: elastic supports, torque, gravity (the density it needs is in the
+material files since M6), and solving several load cases on one matrix.
 
 ---
 
@@ -756,7 +935,7 @@ that comes early.
 | M3 | **Octree adaptivity**: forest of root blocks, Galerkin coarsening, 2:1 balance, hanging-node constraints, downscaling, mark/refine/re-solve loop, RAM-based L suggestion | adaptive min SF (isotropic von Mises for now) within 5 % of the M2 reference using a fraction of its DOF; time per pass and coarse-level bias measured; defaults for L and k chosen. **Done 2026-10-06:** peak within 5 % on every part tried, with 20–67 % of the DOF; k = 2 and L = 3 kept, L = 0 for small parts; measurements in §7.2. The solver had to move to double precision on the way (§7.1). |
 | M4 | **Viewer**: model, toolpaths with layer slider, cells, octree overlay, result colouring | cube toolpaths coloured by feature; cantilever result and refinement shown. **Done 2026-10-07:** both shown, plus the cells view, the deformed shape and a pass-by-pass view of the refinement; details in §12. |
 | M5 | **Interfaces & loads editor**: picking, region growing, glyphs, load cases, project save/load | define a bracket's bolt holes + force in the UI and solve. **Done 2026-10-07:** the bracket with two bolt holes and a force on its tip is set up by clicking, saved as a study and solved, flat and standing on edge; details in §10. |
-| M6 | **Materials & TDS**: JSON DB, Bambu TDS import, filament → material mapping | PLA Basic + PETG HF generated from their PDFs with sources |
+| M6 | **Materials & TDS**: JSON DB, Bambu TDS import, filament → material mapping | PLA Basic + PETG HF generated from their PDFs with sources. **Done 2026-10-08:** both are generated from their sheets, every number with its page, and so is every other Bambu filament with a published sheet (45 materials); the solver takes the stiffness of the filament that was sliced; details in §9. |
 | M7 | **Print-aware material**: line directions, orthotropy, feature classes, bond factor from temps and time gaps | flat vs upright bar shows the TDS XY/Z ratio |
 | M8 | **Failure & results**: criteria, SF, governing mode, weakest spot, deformed shape, probe. The refinement marking switches from von Mises to the real failure index. | bracket shows its weakest layer line and failure load |
 | M9 | **Orientation study**: manual compare + automatic sweep (coarse screening, refine the best 3) and ranking | ranked table of orientations for a bracket |
@@ -769,6 +948,17 @@ that comes early.
 - **Absolute numbers will be rough.** FDM strength scatters ±20 % even in the TDS. What the
   tool is good at is **ranking orientations and finding the weak spot**, and that is all the
   loop needs. Real coupons in M10 tighten the numbers.
+- **A data sheet's numbers are the best the plastic can do.** Bambu's specimens are
+  printed solid, dried and mostly annealed (§9). A real part is neither, and across the
+  layers it is weaker than the sheet says. Until the bond factor (M7) and the coupons
+  (M10), a safety factor from these strengths would be optimistic.
+- **A stand-in is another filament's numbers.** Martin's own filaments (eSun, Sunlu,
+  Prusament, …) have no material files yet and are solved with Bambu's material of the
+  same type. The result says so, but it cannot say how far off that is. PLA+ and PLA
+  Basic, or a PC blend and PC, can differ by a few tens of percent.
+- **TPU is solved like everything else:** linear, with small strains, and with a
+  Poisson's ratio of 0.48, near which 8-node elements are known to come out too stiff (not
+  measured here). A flexible part that visibly deforms is outside what this model can say.
 - **The coarse pass can miss a hotspot.** Coarse elements are too stiff where they hold
   thin members that bend, so a real hotspot there can look harmless. Measured in M3: a
   hotspot inside an 8³ element reads at 0.5–0.6 of its real stress on printed parts. Two

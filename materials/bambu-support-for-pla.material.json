@@ -1,0 +1,44 @@
+{
+  "format": 1,
+  "name": "Bambu Support For PLA",
+  "vendor": "Bambu Lab",
+  "type": "PLA",
+  "filaments": [
+    "Bambu Support For PLA"
+  ],
+  "documents": [
+    {
+      "id": "tds",
+      "title": "Bambu Filament Technical Data Sheet V1.0, Support For PLA",
+      "file": "tds/bambu-support-for-pla-tds-v1.0.pdf",
+      "url": "https://store.bblcdn.com/s2/default/200ef29f5cd04b20ba6c2c86f0cc3ec0/Bambus_Support_for_PLA_Technical_Data_Sheet.pdf",
+      "sha256": "4e070b33f2d0ff9c6169519635e7c2d508fd0760e2379dfc5cbd525ee89bdf2d"
+    }
+  ],
+  "properties": {
+    "density": {
+      "value": 1.33,
+      "unit": "g/cm³",
+      "method": "ISO 1183",
+      "source": "tds",
+      "page": 2
+    },
+    "poissonRatio": {
+      "value": 0.35,
+      "unit": "",
+      "assumed": "The data sheet gives none; 0.35 is usual for rigid thermoplastics."
+    },
+    "nozzleTemperatureMin": {
+      "value": 220,
+      "unit": "°C",
+      "source": "tds",
+      "page": 1
+    },
+    "nozzleTemperatureMax": {
+      "value": 230,
+      "unit": "°C",
+      "source": "tds",
+      "page": 1
+    }
+  }
+}

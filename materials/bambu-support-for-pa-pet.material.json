@@ -1,0 +1,44 @@
+{
+  "format": 1,
+  "name": "Bambu Support For PA/PET",
+  "vendor": "Bambu Lab",
+  "type": "PA",
+  "filaments": [
+    "Bambu Support For PA/PET"
+  ],
+  "documents": [
+    {
+      "id": "tds",
+      "title": "Bambu Filament Technical Data Sheet V1.0, Support For PA/PET",
+      "file": "tds/bambu-support-for-pa-pet-tds-v1.0.pdf",
+      "url": "https://store.bblcdn.eu/s8/default/a515fafc99ab483092a3aaeed8e95841/Bambu_Support_for_PA_and_PET_Technical_Data_Sheet.pdf",
+      "sha256": "8aa9c8a2a4572bf5e15ae2b4752254b498449e55cab8bc1628f9cf9f024994b7"
+    }
+  ],
+  "properties": {
+    "density": {
+      "value": 1.17,
+      "unit": "g/cm³",
+      "method": "ISO1183",
+      "source": "tds",
+      "page": 2
+    },
+    "poissonRatio": {
+      "value": 0.35,
+      "unit": "",
+      "assumed": "The data sheet gives none; 0.35 is usual for rigid thermoplastics."
+    },
+    "nozzleTemperatureMin": {
+      "value": 260,
+      "unit": "°C",
+      "source": "tds",
+      "page": 1
+    },
+    "nozzleTemperatureMax": {
+      "value": 290,
+      "unit": "°C",
+      "source": "tds",
+      "page": 1
+    }
+  }
+}

@@ -1,3 +1,4 @@
+using GcodeFem.Core.Fem;
 using GcodeFem.Core.Gcode;
 using GcodeFem.Core.Materials;
 using GcodeFem.Core.Slicing;
@@ -33,15 +34,19 @@ static class MaterialCommands
     }
 
     /// <summary>The material and the stiffness that is solved with, and loudly if the material is not the filament's own.</summary>
-    public static void Print(MaterialMatch match, double youngsModulus, double poissonRatio, bool overridden)
+    /// <param name="changes">What the command line changed of the material's stiffness, in words; empty if nothing.</param>
+    public static void Print(MaterialMatch match, OrthotropicMaterial stiffness, IReadOnlyList<string> changes)
     {
         var material = match.Material;
         Console.WriteLine($"material     {Text.Ascii(match.Kind == MatchKind.ByName ? match.Describe() : material.Name)}");
         if (match.IsStandIn) Console.WriteLine($"  WARNING    {Text.Ascii(match.Describe())}");
         var across = material.Number(MaterialProperty.YoungsModulusZ) is { } z ? $", {z:0} MPa across the layers" : "";
         var given = material.Number(MaterialProperty.YoungsModulusXY) is { } xy ? $"E {xy:0} MPa in the plane of the layers{across}; " : "";
-        var poisson = material.Of(MaterialProperty.PoissonRatio) is { IsAssumed: true } && !overridden ? " (assumed)" : "";
-        Console.WriteLine($"  stiffness  {given}solved with E {youngsModulus:0} MPa in every direction, nu {poissonRatio:0.###}{poisson}{(overridden ? ", as given by --E / --nu" : "")}");
+        var poisson = material.Of(MaterialProperty.PoissonRatio) is { IsAssumed: true } && !changes.Any(c => c.Contains("nu")) ? " (assumed)" : "";
+        var solved = stiffness.IsIsotropic ? $"E {stiffness.AlongLine:0} MPa in every direction"
+            : stiffness.IsInPlaneIsotropic ? $"E {stiffness.AlongLine:0} MPa in the plane of the layers, {stiffness.AcrossLayers:0} across them"
+            : $"E {stiffness.AlongLine:0} MPa along the lines, {stiffness.AcrossLine:0} across them in the plane, {stiffness.AcrossLayers:0} across the layers";
+        Console.WriteLine($"  stiffness  {given}solved with {solved}, nu {stiffness.PoissonRatio:0.###}{poisson}{(changes.Count > 0 ? $"; {string.Join(", ", changes)}" : "")}");
         if (material.Number(MaterialProperty.TensileStrengthXY) is { } strength)
             Console.WriteLine($"  strength   {strength:0.#} MPa in the plane of the layers{(material.Number(MaterialProperty.TensileStrengthZ) is { } weak ? $", {weak:0.#} MPa across them" : "")} (tensile)");
     }

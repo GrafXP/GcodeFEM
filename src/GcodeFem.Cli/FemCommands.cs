@@ -3,14 +3,17 @@ using System.Numerics;
 using GcodeFem.Core.Fem;
 using GcodeFem.Core.Gcode;
 using GcodeFem.Core.Geometry;
+using GcodeFem.Core.Slicing;
 using GcodeFem.Core.Study;
+using GcodeFem.Core.Visual;
 
 namespace GcodeFem.Cli;
 
 static class FemCommands
 {
     /// <summary>A sliced, voxelized part with its mounts and loads.</summary>
-    public sealed record Problem(CellGrid Grid, IsotropicMaterial Material, LoadCase LoadCase, float MinFill)
+    /// <param name="Bonding">What the bond of its layer lines is measured against.</param>
+    public sealed record Problem(CellGrid Grid, OrthotropicMaterial Material, LoadCase LoadCase, float MinFill, BondReference Bonding)
     {
         /// <summary>Nodes of <paramref name="mesh"/> that carry load.</summary>
         public List<int> LoadedNodes(FemMesh mesh)
@@ -28,10 +31,10 @@ static class FemCommands
     {
         var study = commandLine.Option("study") is { } path ? StudyFile.Load(path) : null;
         var (result, toolpath) = await SliceCommands.SliceAndParse(commandLine, study);
-        var material = Material(commandLine, toolpath);
+        var (material, bonding) = Material(commandLine, toolpath);
 
         var watch = Stopwatch.StartNew();
-        var grid = Voxelizer.Voxelize(toolpath, result.Placement, result.PrintMesh.Bounds);
+        var grid = Voxelize(result, toolpath);
         var minFill = (float)commandLine.Number("min-fill", 0.05);
         var voxelized = watch.Elapsed;
 
@@ -55,23 +58,95 @@ static class FemCommands
         }
         Console.WriteLine($"cells        grid {grid.SizeX} x {grid.SizeY} x {grid.SizeZ}, {grid.BlockCount} blocks of {CellGrid.BlockSize}^3; " +
                           $"voxelized in {voxelized.TotalSeconds:0.00} s, {grid.TotalVolume:0.0} mm3 deposited, {grid.LostVolume:0.000} mm3 outside the grid");
-        return new Problem(grid, material, loadCase, minFill);
+        return new Problem(grid, material, loadCase, minFill, bonding);
+    }
+
+    /// <summary>The part's cells, with times stretched to the slicer's own (acceleration included).</summary>
+    static CellGrid Voxelize(SliceResult result, Toolpath toolpath)
+    {
+        var clock = PrintClock.Calibrated(toolpath, result.Report.FeatureSeconds);
+        var stretched = Enum.GetValues<FeatureType>().Where(f => f.IsPartMaterial() && clock.Factor(f) > 1 && toolpath.Segments.Any(s => s.Feature == f))
+            .Select(f => $"{f.DisplayName().ToLowerInvariant()} x{clock.Factor(f):0.00}").Append($"travel x{clock.TravelFactor:0.00}");
+        Console.WriteLine($"clock        feed-rate times stretched to the slicer's: {string.Join(", ", stretched)}");
+        return Voxelizer.Voxelize(toolpath, result.Placement, result.PrintMesh.Bounds, clock);
     }
 
     /// <summary>
     /// The stiffness to solve with: that of the material of the filament the part was sliced with
-    /// (or of --material), unless --E and --nu say otherwise.
+    /// (or of --material), unless --isotropic, --E or --nu say otherwise; and what the bond of the
+    /// layer lines is measured against.
     /// </summary>
-    static IsotropicMaterial Material(CommandLine commandLine, Toolpath toolpath)
+    static (OrthotropicMaterial Stiffness, BondReference Bonding) Material(CommandLine commandLine, Toolpath toolpath, bool print = true)
     {
         var match = MaterialCommands.For(commandLine, toolpath);
-        var overridden = commandLine.Option("E") is not null || commandLine.Option("nu") is not null;
+        var changes = new List<string>();
         // Given both numbers, the material need not have any.
-        var own = commandLine.Option("E") is not null && commandLine.Option("nu") is not null ? default : match.Material.Isotropic();
-        var material = new IsotropicMaterial(commandLine.Number("E", own.YoungsModulus), commandLine.Number("nu", own.PoissonRatio));
-        Console.WriteLine();
-        MaterialCommands.Print(match, material.YoungsModulus, material.PoissonRatio, overridden);
-        return material;
+        var material = commandLine.Option("E") is not null && commandLine.Option("nu") is not null ? default : match.Material.Stiffness();
+        if (commandLine.Flag("isotropic"))
+        {
+            material = new OrthotropicMaterial(material.AlongLine, material.AlongLine, material.AlongLine, material.PoissonRatio);
+            changes.Add("the same every way (--isotropic)");
+        }
+        if (commandLine.Option("E") is not null)
+        {
+            var e = commandLine.Number("E", 0);
+            material = new OrthotropicMaterial(e, e, e, material.PoissonRatio);
+            changes.Add("E as given by --E");
+        }
+        if (commandLine.Option("nu") is not null)
+        {
+            material = material with { PoissonRatio = commandLine.Number("nu", 0) };
+            changes.Add("nu as given by --nu");
+        }
+        if (commandLine.Option("across-line") is not null)
+        {
+            material = material with { AcrossLine = commandLine.Number("across-line", 0) };
+            changes.Add("across the lines as given by --across-line");
+        }
+        if (print)
+        {
+            Console.WriteLine();
+            MaterialCommands.Print(match, material, changes);
+        }
+        return (material, match.Material.Bonding(toolpath));
+    }
+
+    /// <summary>What the cells are made of: the share of each line type, and of cells where lines run more than one way.</summary>
+    public static void PrintLines(FemMesh mesh)
+    {
+        var grid = mesh.Grid;
+        var counts = new int[FeatureTypes.ClassCount];
+        var crossing = 0;
+        foreach (var c in mesh.Cells)
+        {
+            if (grid.Feature(c.I, c.J, c.K) is { } feature) counts[(int)feature]++;
+            if (grid.Direction(c.I, c.J, c.K).Spread >= CellColours.CrossingSpread) crossing++;
+        }
+        var shares = Enumerable.Range(0, counts.Length).Where(f => counts[f] > 0).OrderByDescending(f => counts[f])
+            .Select(f => $"{((FeatureClass)f).DisplayName().ToLowerInvariant()} {(double)counts[f] / mesh.Cells.Length:0%}");
+        Console.WriteLine($"lines        cells by line type: {string.Join(", ", shares)}; lines cross in {(double)crossing / mesh.Cells.Length:0%} of the cells");
+    }
+
+    /// <summary>How well the layer lines have bonded, against the specimens of the data sheet; and what that rests on.</summary>
+    public static void PrintBonds(FemMesh mesh, Problem problem) => PrintBonds(mesh, problem.Bonding, problem.MinFill);
+
+    public static void PrintBonds(FemMesh mesh, BondReference reference, float minFill)
+    {
+        var bonds = new BondModel().Cells(mesh.Grid, mesh.Cells, reference, minFill);
+        var lined = Enumerable.Range(0, mesh.Cells.Length).Where(e => !float.IsNaN(bonds.Gap[e])).ToList();
+        if (lined.Count == 0)
+        {
+            Console.WriteLine("layer bond   no cell lies on another");
+            return;
+        }
+        var sorted = lined.Select(e => bonds.Factor[e]).Order().ToList();
+        var layers = lined.GroupBy(e => mesh.Cells[e].K).Select(g => (Layer: g.Key, Factor: g.Average(e => bonds.Factor[e]), Gap: g.Average(e => bonds.Gap[e]))).ToList();
+        var weakest = layers.MinBy(l => l.Factor);
+        Console.WriteLine($"layer bond   {sorted[0]:0.00} to {sorted[^1]:0.00} of the specimens' (median {sorted[sorted.Count / 2]:0.00}, {sorted.Count(f => f < 0.9f) / (double)sorted.Count:0%} of the layer lines below 0.9); " +
+                          $"weakest layer {weakest.Layer + 1}: {weakest.Factor:0.00}, printed {weakest.Gap:0.0} s after the one below");
+        Console.WriteLine($"  against    the specimens: nozzle {reference.NozzleTemperature:0} C, layers {reference.LayerTime:0.#} s apart, fan {reference.Fan:0%}, glass transition {reference.GlassTransition:0} C");
+        foreach (var assumption in reference.Assumed) Console.WriteLine($"  assumed    {Text.Ascii(assumption)}");
+        Console.WriteLine("  (the solve does not use it: it lowers the strength across the layers, which the failure check will take)");
     }
 
     /// <summary>What each interface of a study got hold of on the cells: how many cell faces, their area, and the force that arrives.</summary>
@@ -96,6 +171,8 @@ static class FemCommands
             new AnalysisOptions(MinFill: problem.MinFill, MaxIterations: (int)commandLine.Number("max-iterations", 50_000)));
 
         PrintAnalysis(fem);
+        PrintLines(fem.Mesh);
+        PrintBonds(fem.Mesh, problem);
         PrintReach(fem.Mesh, problem.LoadCase);
         var face = problem.LoadedNodes(fem.Mesh).Select(fem.Displacement).ToList();
         if (face.Count > 0)
@@ -104,6 +181,71 @@ static class FemCommands
             Console.WriteLine($"  loaded face mean displacement {Text.Format(mean)} mm");
         }
         return 0;
+    }
+
+    /// <summary>
+    /// A bar sliced lying flat and standing up, each pulled along its length: the ratio of their
+    /// stiffnesses should be the data sheet's, in the plane of the layers over across them. Each is
+    /// also solved with the in-plane modulus every way, which leaves only what the slicer's lines and
+    /// the cells make of the two bars; the ratio of the two ratios is then what the material adds.
+    /// The strain is read between a quarter and three quarters of the length, away from the clamp and the load.
+    /// </summary>
+    public static async Task<int> Bars(CommandLine commandLine)
+    {
+        float length = (float)commandLine.Number("length", 60), width = (float)commandLine.Number("width", 4), height = (float)commandLine.Number("height", 1.6);
+        var force = (float)commandLine.Number("force", 20);
+        var minFill = (float)commandLine.Number("min-fill", 0.05);
+        var solver = LinearSolvers.ByName(commandLine.Option("solver") ?? "auto");
+        var bar = MeshFactory.Box(Vector3.Zero, new Vector3(length, width, height));
+
+        var moduli = new List<(string Name, double Printed, double Isotropic, double Filled)>();
+        OrthotropicMaterial material = default;
+        foreach (var (name, turned, axis) in new[] { ("flat", Vector3.Zero, Axis.X), ("upright", new Vector3(0, -90, 0), Axis.Z) })
+        {
+            Console.WriteLine($"=== {name} ===");
+            var (result, toolpath) = await SliceCommands.SliceAndParse(commandLine, model: bar, turned: turned, brief: true);
+            (material, var bonding) = Material(commandLine, toolpath, print: moduli.Count == 0);
+            Console.WriteLine();
+            var grid = Voxelize(result, toolpath);
+            var loadCase = LoadCase.ClampAndPush(grid.OccupiedBounds(minFill), axis, fixMax: false, force * LoadCase.Unit(axis));
+            var options = new AnalysisOptions(MinFill: minFill);
+            var fem = StaticAnalysis.Run(grid, material, loadCase, solver, options);
+            PrintAnalysis(fem);
+            PrintLines(fem.Mesh);
+            PrintBonds(fem.Mesh, bonding, minFill);
+            var isotropic = new OrthotropicMaterial(material.AlongLine, material.AlongLine, material.AlongLine, material.PoissonRatio);
+            var same = StaticAnalysis.Run(fem.Mesh, isotropic, loadCase, solver, options);
+            var model = result.PrintMesh.Bounds;
+            moduli.Add((name, Modulus(fem, model, axis, force), Modulus(same, model, axis, force), fem.Mesh.Cells.Sum(c => (double)grid.Volume(c.I, c.J, c.K)) / (model.Size.X * model.Size.Y * model.Size.Z)));
+            Console.WriteLine();
+        }
+
+        var (flat, upright) = (moduli[0], moduli[1]);
+        Console.WriteLine($"bars         {length:0.##} x {width:0.##} x {height:0.##} mm, pulled along their length with {force:0.##} N; strain between a quarter and three quarters of it, on the bar's own section");
+        Console.WriteLine($"  {"",-10} {"E, MPa",8} {"same every way",15} {"plastic",8}");
+        foreach (var (name, printed, same, filled) in moduli)
+            Console.WriteLine($"  {name,-10} {printed,8:0} {same,15:0} {filled,8:0%}");
+        Console.WriteLine($"  ratio      flat / upright {flat.Printed / upright.Printed:0.000}, the same every way {flat.Isotropic / upright.Isotropic:0.000}; " +
+                          $"what the material adds {flat.Printed / upright.Printed / (flat.Isotropic / upright.Isotropic):0.000}, its in-plane / across-layers modulus {material.AlongLine / material.AcrossLayers:0.000}");
+        return 0;
+    }
+
+    /// <summary>
+    /// Apparent Young's modulus along <paramref name="axis"/>: force over the section of <paramref name="model"/>,
+    /// over the strain between the node planes nearest a quarter and three quarters of the bar.
+    /// </summary>
+    static double Modulus(FemResult fem, Box3 model, Axis axis, float force)
+    {
+        var mesh = fem.Mesh;
+        float Along(Vector3 v) => LoadCase.Component(v, axis);
+        var planes = Enumerable.Range(0, mesh.NodeCount).Select(n => Along(mesh.NodePosition(n))).Distinct().ToArray();
+        float Nearest(float at) => planes.MinBy(plane => MathF.Abs(plane - at));
+        var (low, span) = (Along(model.Min), Along(model.Size));
+        var (from, to) = (Nearest(low + span / 4), Nearest(low + 3 * span / 4));
+        double Shift(float plane) => Enumerable.Range(0, mesh.NodeCount).Where(n => MathF.Abs(Along(mesh.NodePosition(n)) - plane) < 1e-4f).Average(n => Along(fem.Displacement(n)));
+        var strain = (Shift(to) - Shift(from)) / (to - from);
+        var section = model.Size.X * model.Size.Y * model.Size.Z / span;
+        return force / section / strain;
     }
 
     /// <summary>Solid cantilevers of growing size: DOF vs time vs memory, tip deflection vs Timoshenko.</summary>

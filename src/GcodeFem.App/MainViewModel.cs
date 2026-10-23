@@ -328,7 +328,16 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     {
         materials = MaterialLibrary.Load(materials.Directory);
         RefreshMaterial();
+        if (job is { } current)
+        {
+            current.Bonds = Bonds(current.Grid, current.Cells, current.Toolpath, materials);
+            if (View == ViewMode.Cells) Redraw();
+        }
     }
+
+    /// <summary>How well each cell has bonded to the one below, against the specimens of the material of the filament the part was sliced with.</summary>
+    static LayerBonds Bonds(CellGrid grid, CellIndex[] cells, Toolpath toolpath, MaterialLibrary library) =>
+        new BondModel().Cells(grid, cells, library.Match(toolpath).Material.Bonding(toolpath), PrintJob.MinFill);
 
     /// <summary>Says which material the selected filament will be solved with. The solve itself goes by the filament of the slice.</summary>
     void RefreshMaterial()
@@ -485,12 +494,15 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         {
             var slicer = new BambuSlicer(bambu, presets, BambuSlicer.DefaultCacheDirectory);
             var request = new SliceRequest(part, Rotation, machine, Process, Filament);
+            var library = materials;
             var sliced = await Task.Run(async () =>
             {
                 var slice = await slicer.SliceAsync(request);
                 var toolpath = GcodeParser.Parse(slice.GcodePath);
-                var grid = Voxelizer.Voxelize(toolpath, slice.Placement, slice.PrintMesh.Bounds);
-                return new PrintJob { Slice = slice, Toolpath = toolpath, Grid = grid, Cells = [.. grid.Occupied(PrintJob.MinFill)] };
+                // The slicer's own times per line type include acceleration, which the bond of the layer lines depends on.
+                var grid = Voxelizer.Voxelize(toolpath, slice.Placement, slice.PrintMesh.Bounds, PrintClock.Calibrated(toolpath, slice.Report.FeatureSeconds));
+                CellIndex[] cells = [.. grid.Occupied(PrintJob.MinFill)];
+                return new PrintJob { Slice = slice, Toolpath = toolpath, Grid = grid, Cells = cells, Bonds = Bonds(grid, cells, toolpath, library) };
             });
 
             if (!ReferenceEquals(Part, part)) return; // another model was opened meanwhile
@@ -545,7 +557,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             var chosen = study.LoadCases[LoadCases.IndexOf(shown)];
             // The material of the filament the part was sliced with, which need not be the one selected now.
             var match = materials.Match(current.Toolpath);
-            var material = match.Material.Isotropic();
+            var material = match.Material.Stiffness();
             var options = new AdaptiveOptions(RootLevel: Level.Value, MinFill: PrintJob.MinFill, KeepPassFields: true);
             Passes.Clear();
             Status = "Solving: building the mesh…";
@@ -562,7 +574,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 var mesh = FemMesh.Build(current.Grid, PrintJob.MinFill, loadCase);
                 var reach = Assembler.Reach(mesh, loadCase);
                 var result = AdaptiveAnalysis.Run(mesh, material, loadCase, LinearSolvers.Best(), options, ((IProgress<AdaptivePass>)progress).Report);
-                return new SolvedJob(result, chosen.Name, reach, match);
+                var bonds = new BondModel().Cells(mesh.Grid, mesh.Cells, match.Material.Bonding(current.Toolpath), PrintJob.MinFill);
+                return new SolvedJob(result, chosen.Name, reach, match, bonds);
             });
 
             if (!ReferenceEquals(job, current)) return; // sliced again or another model opened meanwhile
@@ -615,7 +628,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                         $"{reach}.\n" +
                         $"{result.Passes.Count} {(result.Passes.Count == 1 ? "pass" : "passes")}, {final.Dofs:N0} unknowns in the last, {result.Time.TotalSeconds:0.0} s. " +
                         $"Stopped because {result.StopReason}.{dropped}\n" +
-                        MaterialLine(solved.Material);
+                        MaterialLine(solved.Material) +
+                        "\n" + BondLine(mesh, solved.Bonds);
 
         var unconverged = result.Passes.Where(p => !p.Solve.Converged).Select(p => p.Index + 1).ToList();
         var warnings = new List<string>();
@@ -632,10 +646,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     static string MaterialLine(MaterialMatch match)
     {
         var material = match.Material;
-        var isotropic = material.Isotropic();
-        var across = material.Number(MaterialProperty.YoungsModulusZ) is { } z && z != isotropic.YoungsModulus
-            ? $" (its value in the plane of the layers; across them it is {z:0}, which the solver does not use yet)"
-            : "";
+        var stiffness = material.Stiffness();
+        var moduli = stiffness.IsIsotropic
+            ? $"E {stiffness.AlongLine:0} MPa in every direction"
+            : $"E {stiffness.AlongLine:0} MPa in the plane of the layers and {stiffness.AcrossLayers:0} across them";
         var poisson = material.Of(MaterialProperty.PoissonRatio) is { IsAssumed: true } ? ", assumed" : "";
         var whose = match.Kind switch
         {
@@ -643,7 +657,17 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             MatchKind.ByType => $" It stands in for {match.Filament}, which has no data of its own.",
             _ => " No data for this filament.",
         };
-        return $"Material: {material.Name}, E {isotropic.YoungsModulus:0} MPa in every direction{across}, Poisson's ratio {isotropic.PoissonRatio:0.##}{poisson}.{whose}";
+        return $"Material: {material.Name}, {moduli}, Poisson's ratio {stiffness.PoissonRatio:0.##}{poisson}.{whose}";
+    }
+
+    /// <summary>How well the layer lines of the solved cells have bonded, and that the solve does not use it yet.</summary>
+    static string BondLine(FemMesh mesh, LayerBonds bonds)
+    {
+        var lined = Enumerable.Range(0, mesh.Cells.Length).Where(e => !float.IsNaN(bonds.Gap[e])).ToList();
+        if (lined.Count == 0) return "No cell lies on another, so there are no layer lines.";
+        var weakest = lined.GroupBy(e => mesh.Cells[e].K).Select(g => (Layer: g.Key, Factor: g.Average(e => bonds.Factor[e]), Gap: g.Average(e => bonds.Gap[e]))).MinBy(l => l.Factor);
+        return $"Layer lines bonded {lined.Min(e => bonds.Factor[e]):0%} to {lined.Max(e => bonds.Factor[e]):0%} as well as the data sheet's specimens; the weakest layer is {weakest.Layer + 1} " +
+               $"({weakest.Factor:0%}, printed {weakest.Gap:0} s after the one below). This weakens the strength across the layers, which is not checked yet; the stiffness does not depend on it.";
     }
 
     void OnLineTypeChanged(object? sender, PropertyChangedEventArgs e) => Redraw();

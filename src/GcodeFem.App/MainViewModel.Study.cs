@@ -248,6 +248,10 @@ public sealed partial class MainViewModel
     public IReadOnlyList<Choice<CellColouring>> CellColourings { get; } =
     [
         new(CellColouring.Fill, "Fill"),
+        new(CellColouring.Direction, "Which way the lines run"),
+        new(CellColouring.Feature, "Line type"),
+        new(CellColouring.Bond, "Bond to the layer below"),
+        new(CellColouring.Gap, "Time since the layer below"),
         new(CellColouring.Interfaces, "Interfaces, as the solver takes them"),
     ];
 

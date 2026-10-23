@@ -18,7 +18,10 @@ public static class Assembler
     /// Cells are assembled in 8 parity colours: cells of one colour share no nodes, so each colour
     /// runs in parallel without locks.
     /// </summary>
-    public static LinearSystem Assemble(FemMesh mesh, IsotropicMaterial material, LoadCase loadCase)
+    public static LinearSystem Assemble(FemMesh mesh, OrthotropicMaterial material, LoadCase loadCase) =>
+        Assemble(mesh, new CellStiffness(mesh, material), loadCase);
+
+    public static LinearSystem Assemble(FemMesh mesh, CellStiffness stiffness, LoadCase loadCase)
     {
         var nodes = mesh.NodeCount;
         var colours = ColourCells(mesh);
@@ -66,18 +69,13 @@ public static class Assembler
             }
         });
 
-        // Values: one element matrix per layer height, scaled by E × φ per cell.
-        var unit = new IsotropicMaterial(1, material.PoissonRatio).Constitutive();
-        var byHeight = new Dictionary<float, double[]>();
-        foreach (var height in mesh.Cells.Select(c => mesh.Grid.CellHeight(c.K)).Distinct())
-            byHeight[height] = HexElement.Stiffness(mesh.Grid.Pitch, mesh.Grid.Pitch, height, unit);
-
+        // Values: each cell's element matrix scaled by its fill φ.
         var values = new double[running];
         foreach (var colour in colours)
             Parallel.ForEach(colour, e =>
             {
-                var ke = byHeight[mesh.Grid.CellHeight(mesh.Cells[e].K)];
-                var scale = material.YoungsModulus * mesh.Fill[e];
+                var ke = stiffness.Matrix(stiffness.Kind[e]);
+                var scale = mesh.Fill[e];
                 for (var a = 0; a < 8; a++)
                 {
                     var na = mesh.CellNodes[e * 8 + a];

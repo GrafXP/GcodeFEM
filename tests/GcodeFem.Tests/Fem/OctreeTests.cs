@@ -152,7 +152,7 @@ public class OctreeTests
             Assert.Equal(-Material.PoissonRatio * strain * forest.Y(j), u[3 * n + 1], 7);
             Assert.Equal(-Material.PoissonRatio * strain * forest.Z(k), u[3 * n + 2], 7);
         }
-        Assert.All(octree.CellStresses(u, Material).VonMises, s => Assert.Equal(stress, s, 3));
+        Assert.All(octree.CellStresses(u).VonMises, s => Assert.Equal(stress, s, 3));
     }
 
     [Fact]

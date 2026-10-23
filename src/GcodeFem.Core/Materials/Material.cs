@@ -1,4 +1,5 @@
 using GcodeFem.Core.Fem;
+using GcodeFem.Core.Gcode;
 
 namespace GcodeFem.Core.Materials;
 
@@ -161,14 +162,52 @@ public sealed class Material
     public double? Number(MaterialProperty property) => Of(property)?.Value;
 
     /// <summary>
-    /// The material as the solver takes it for now: the same in every direction, with the stiffness
-    /// measured in the plane of the layers. The lower stiffness across them comes in with the line
-    /// directions (M7).
+    /// The stiffness the solver takes: in the plane of the layers the modulus measured there, along
+    /// the lines and across them alike; across the layers the one measured across them. A material
+    /// that gives no modulus across the layers is the same every way.
     /// </summary>
-    public IsotropicMaterial Isotropic() =>
-        Lacking() is { Count: > 0 } lacking
-            ? throw new InvalidDataException($"The material '{Name}' cannot be solved with: it gives no {string.Join(" and no ", lacking.Select(p => p.Label()))}.")
-            : new IsotropicMaterial(Values[MaterialProperty.YoungsModulusXY].Value, Values[MaterialProperty.PoissonRatio].Value);
+    /// <remarks>
+    /// The sheet's in-plane value is measured on specimens printed flat, and it does not show which
+    /// way their lines ran; nothing in it says how much stiffer a line is along than across. Taking
+    /// the modulus across a line as low as across the layers would make a solid layer at ±45° a
+    /// tenth softer than the sheet's number with nothing to show for it (PLAN.md §6). How much a
+    /// line is stiffer along than across is what the 0° and 45° coupons of M10 are to measure.
+    /// </remarks>
+    public OrthotropicMaterial Stiffness()
+    {
+        if (Lacking() is { Count: > 0 } lacking)
+            throw new InvalidDataException($"The material '{Name}' cannot be solved with: it gives no {string.Join(" and no ", lacking.Select(p => p.Label()))}.");
+        var inPlane = Values[MaterialProperty.YoungsModulusXY].Value;
+        var across = Number(MaterialProperty.YoungsModulusZ) ?? inPlane;
+        return new OrthotropicMaterial(inPlane, inPlane, across, Values[MaterialProperty.PoissonRatio].Value);
+    }
+
+    /// <summary>
+    /// How this material's specimens were printed, which is what the bond of a layer line is
+    /// measured against: the sheet's own numbers where it gives them, and where it does not, what is
+    /// assumed instead, said in <see cref="BondReference.Assumed"/>. No sheet says how long a
+    /// specimen's layers took or how hard the fan blew; they are taken from the filament preset the
+    /// part was sliced with, on the view that the vendor printed its specimens with its own preset:
+    /// small specimens print at its shortest layer time, and at that the fan runs at its highest.
+    /// </summary>
+    public BondReference Bonding(Toolpath toolpath)
+    {
+        var assumed = new List<string>();
+        if (Number(MaterialProperty.SpecimenNozzleTemperature) is not { } nozzle)
+        {
+            nozzle = toolpath.SettingNumber("nozzle_temperature") ?? 220;
+            assumed.Add($"the specimens' nozzle temperature, {nozzle:0} °C: the filament preset's, as the data sheet gives none");
+        }
+        if (Number(MaterialProperty.GlassTransitionTemperature) is not { } glass)
+        {
+            (glass, var of) = TypicalValues.GlassTransition(Type);
+            assumed.Add($"the glass transition at {glass:0} °C, usual for {of}, as the data sheet gives none");
+        }
+        var layerTime = toolpath.SettingNumber("slow_down_layer_time") ?? 8;
+        var fan = (toolpath.SettingNumber("fan_max_speed") ?? 100) / 100;
+        assumed.Add($"the specimens' layers {layerTime:0.#} s apart with the fan at {fan:0%}, the filament preset's shortest layer time and its fan for it");
+        return new BondReference(nozzle, glass, layerTime, fan, assumed);
+    }
 
     /// <summary>What the solver needs and the material does not give. A data sheet without them can still be kept: it says what it says.</summary>
     public IReadOnlyList<MaterialProperty> Lacking() =>
@@ -223,5 +262,20 @@ public static class TypicalValues
         if (plain.StartsWith("PA", StringComparison.Ordinal)) return (0.39, "polyamides");
         if (plain.StartsWith("PC", StringComparison.Ordinal)) return (0.37, "polycarbonate");
         return (0.35, "rigid thermoplastics");
+    }
+
+    /// <summary>A usual glass transition temperature (°C) for the filament type, and for whom it is usual.</summary>
+    public static (double Value, string Of) GlassTransition(string type)
+    {
+        var plain = type.ToUpperInvariant();
+        if (plain.StartsWith("TPU", StringComparison.Ordinal) || plain.StartsWith("TPE", StringComparison.Ordinal)) return (-40, "TPU");
+        if (plain.StartsWith("PETG", StringComparison.Ordinal) || plain.StartsWith("PCTG", StringComparison.Ordinal)) return (80, "PETG");
+        if (plain.StartsWith("PET", StringComparison.Ordinal)) return (75, "PET");
+        if (plain.StartsWith("PLA", StringComparison.Ordinal)) return (60, "PLA");
+        if (plain.StartsWith("ABS", StringComparison.Ordinal)) return (105, "ABS");
+        if (plain.StartsWith("ASA", StringComparison.Ordinal)) return (100, "ASA");
+        if (plain.StartsWith("PC", StringComparison.Ordinal)) return (145, "polycarbonate");
+        if (plain.StartsWith("PA", StringComparison.Ordinal)) return (50, "dry polyamides");
+        return (80, "rigid thermoplastics");
     }
 }

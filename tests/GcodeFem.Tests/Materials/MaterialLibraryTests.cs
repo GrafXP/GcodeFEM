@@ -78,7 +78,7 @@ public sealed class MaterialLibraryTests : IDisposable
         var noStandIn = library.Match("greentec pro carbon", "PLA-CF");
 
         Assert.Equal((MatchKind.None, MatchKind.None), (unknownType.Kind, noStandIn.Kind));
-        Assert.Equal(2500, unknownType.Material.Isotropic().YoungsModulus);
+        Assert.Equal(2500, unknownType.Material.Stiffness().AlongLine);
         Assert.Contains("generic stiffness of 2500 MPa", unknownType.Describe());
         Assert.Contains("'Fancy PEEK' (PEEK)", unknownType.Describe());
     }

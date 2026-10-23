@@ -19,6 +19,7 @@ try
         "adapt" when commandLine.Positional.Count == 1 || commandLine.Flag("study") => await AdaptCommands.Adapt(commandLine),
         "study" when commandLine.Positional.Count >= 2 => StudyCommands.Run(commandLine),
         "material" when commandLine.Positional.Count >= 1 => MaterialCommands.Run(commandLine),
+        "bars" => await FemCommands.Bars(commandLine),
         "bench" => commandLine.Flag("adaptive") ? AdaptCommands.Bench(commandLine) : FemCommands.Bench(commandLine),
         _ => Usage(),
     };
@@ -40,6 +41,7 @@ static int Usage()
           gcodefem parse <file.gcode>
           gcodefem solve <model.stl> [slice options] [load options] [--solver auto|amg|pcg] [--max-iterations n]
           gcodefem adapt <model.stl> [slice options] [load options] [octree options] [--reference] [--sweep "k=2;k=3,buffer=2"]
+          gcodefem bars [--length 60] [--width 4] [--height 1.6] [--force 20] [slice options] [--material <name>] [--isotropic]
           gcodefem bench [--scales 2,4,6,8] [--solver both|amg|pcg] [--pcg-max-dofs 300000]
           gcodefem bench --adaptive [--scales 2,4,6,8] [octree options] [--verbose]
           gcodefem solve|adapt --study <study.json> [--case <name>] [...]
@@ -56,15 +58,20 @@ static int Usage()
 
         slice options:  --rot x,y,z (degrees, about X then Y then Z) --filament <name> --process <name> --machine <name>
                         Machine, process and filament default to the current Bambu Studio selection.
-        load options:   --fix zmin --force 0,0,-100 [--material <name>] [--E 2500] [--nu 0.35]
+        load options:   --fix zmin --force 0,0,-100 [--material <name>] [--isotropic] [--E 2500] [--nu 0.35] [--across-line 2060]
                         Clamps one outer face of the printed cells (print frame: xmin, xmax, ymin, ymax, zmin = bed side,
                         zmax) and spreads --force (N, print frame) over the opposite face.
         octree options: --level auto|0..5 --k 2 --buffer 1 --energy 0.9 --change 0.03 --passes 10 --max-dofs n --no-interfaces
                         Coarse elements hold (2^level)^3 cells; cells stressed above peak / k end up at bead resolution.
 
         The stiffness is that of the filament's material: the material file that names the filament, else the one that
-        stands in for the filament's type, else a generic one, with a warning for the last two. --material names
-        another, --E and --nu give the numbers directly. --materials <folder> reads the materials from elsewhere.
+        stands in for the filament's type, else a generic one, with a warning for the last two. Each cell has the
+        sheet's modulus in the plane of the layers, along its lines and across them, and the sheet's modulus across the
+        layers in Z. --material names another material, --isotropic takes the modulus in the plane every way, --E and
+        --nu give the numbers directly (--E the same every way), and --across-line sets the modulus across the lines in
+        the plane, for cells that are stiffer along their lines than across them. solve and adapt also show how well
+        each layer line has bonded, against the sheet's specimens: from nozzle temperature, fan and the time since the
+        layer below, with times stretched to the slicer's own. --materials <folder> reads the materials from elsewhere.
         material list shows the materials and which one each filament preset gets; material import reads a technical
         data sheet (Bambu Lab's layout), shows every value with its page and saves it with a copy of the sheet.
         --stand-in makes the material the one used for every filament of its type that has none of its own.
@@ -78,6 +85,8 @@ static int Usage()
 
         solve works at full bead resolution. adapt solves on an octree that is only fine where the stress is high;
         --reference also runs the full solve and compares, --sweep does that for several option sets (';' between sets).
+        bars slices a bar lying flat and standing up and pulls each along its length: their stiffnesses should stand
+        as the material's along the lines to across the layers.
         bench solves solid cantilevers of 800 x scale^3 bead cells and compares the tip with beam theory;
         with --adaptive it compares the octree with the full solve instead.
         --solver also takes amg-ilu0, amg-ilu0-single, amg-ilu1, amg-gs, amg-spai0 and amg-chebyshev.

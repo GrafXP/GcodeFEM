@@ -542,12 +542,96 @@ Read [PLAN.md](PLAN.md) for the design. This file only tracks where things stand
   prevented.
 - Gravity can be built now that the density is there (PLAN.md §10); it is not.
 
+## 2026-10-23 — session 6, on the desktop
+
+- M6 is committed as `282e200` and pushed on **`m3-octree`**, without `materials/tds/`
+  (see session 5). The two tests that read the sheets now skip where they are missing
+  (`SheetsFact`), so a fresh clone stays green.
+- Before any change: 228 tests green.
+- M7 was committed and pushed at the start of session 7, again without `materials/tds/`.
+
+### M7 print-aware material: done
+- `Core/Gcode`:
+  - `FeatureClass` (8 classes, the toolpath view's groups) and `FeatureType.Class()`.
+    `ToolpathColours.Group` now goes through it.
+  - `PrintClock`: segment times stretched per line type to result.json's
+    `feature_type_times`, travel to its "Travel". `FromFeedRates` is the parser's clock.
+- `Core/Fem`:
+  - `CellGrid` keeps, per cell slot of a block with material, volume-weighted sums for the
+    in-plane orientation tensor, time, nozzle temperature, fan and volume per line type
+    (`Deposit(…, Deposition)`). Read back with `Direction` (`LineDirection`: angle and
+    spread), `Feature`, `DepositionTime`, `NozzleTemperature`, `Fan`. `Solid(…, how)` for tests.
+  - `Voxelizer.Voxelize(…, clock)` fills them.
+  - `OrthotropicMaterial` (E along the line, across it, across the layers, ν; Huber's rule
+    for the rest; implicit from `IsotropicMaterial`) and `CellStiffness` (one element matrix
+    per layer height × 5° × spread step, `Kind` per cell).
+  - `Assembler`, `StaticAnalysis`, `AdaptiveAnalysis`, `OctreeForest` take an
+    `OrthotropicMaterial`; the forest sums each cell's own matrix. `OctreeMesh.CellStresses`
+    takes no material any more (the forest's `Cells` has it).
+  - `LayerBond.cs`: `BondModel` (cooling of the layer below, interface temperature, healing
+    above the glass transition), `BondReference` (the specimens' conditions and what of them
+    is assumed), `LayerBonds` (factor and gap per cell).
+- `Core/Materials`: `Material.Stiffness()` replaces `Isotropic()`: E_xy along and across
+  the lines, E_z across the layers. `Material.Bonding(toolpath)`. `TypicalValues.GlassTransition`.
+- `Core/Visual`: `CellColours` (direction groups, line-type colours, their legends).
+- `GcodeFem.App`: the calibrated clock and the bond at slice time (`PrintJob.Bonds`, again
+  when the materials window saves); the cells view colours by direction, line type, bond
+  and gap (`--colour direction|feature|bond|gap`); the result's material line names both
+  moduli, and a line gives the bond's range and weakest layer.
+- CLI: `solve` and `adapt` print the clock's stretches, the cells by line type and the bond;
+  `--isotropic` (the M6 way), `--across-line <MPa>`; `gcodefem bars` is the milestone's check.
+- Tests: 278 green (about 40 s); 50 are new. They cover the material's directions (Huber,
+  turning, crossing), the cells' print data, the bond model, the clock against the cube's
+  result.json, patch tests along each direction, the octree's exactness with slanted and
+  mixed lines, flat against upright bars of cells, and the same with Bambu Studio's slices.
+- Checked:
+
+  | Check | How |
+  | --- | --- |
+  | Bars 60 × 4 × 1.6 mm, flat / upright: PLA Basic 2367 / 1787 MPa, ratio 1.325; 1.252 once what the cells alone do is taken out, the sheet's 1.252. PETG HF 1.175 and ABS 1.122, the sheets' exactly | `gcodefem bars --process "0.20mm Standard @BBL X1C" --filament "Bambu PLA Basic @BBL X1C"` |
+  | Bracket "Pull sideways": flat 18.68 MPa, 0.947 mm (isotropic 18.44, 0.945); on edge 25.49 MPa, 0.987 mm (isotropic 24.64, 0.903) | `gcodefem adapt --study samples\bracket40_holes.study.json [--rot 90,0,0] [--isotropic]` |
+  | Cube: 38 iterations, 7.3 s; bond median 0.95 | `gcodefem solve samples\cube20.stl --process … --filament …` |
+  | Cells view by direction, line type, bond and gap on the bracket | `GcodeFem.App --study samples\bracket40_holes.study.json --view cells --colour direction --layers 1-20 --screenshot out.png` |
+  | The result's material and bond lines, bracket on edge | `GcodeFem.App --study … --rot 90,0,0 --view results --screenshot out.png` |
+
+- Not checked: the skip of the two sheet tests without the PDFs (the PDFs are on this
+  desktop, so they ran). It is a check for files in `materials/tds`.
+
+### What M7 found
+- **The plan's E₂ = E₃ would contradict the sheets.** Bambu's flat specimens (a dogbone,
+  10 mm gauge, 4 mm thick: the sheet's pictures) are what E_xy is measured on, and the
+  sheets show no line pattern. With E₂ = E₃ a ±45° solid layer is 10 % softer than E_xy.
+  So E₂ = E₁ until coupons say otherwise (PLAN.md §6). It mattered little on the slices
+  tried: Bambu Studio laid the solid infill of a 6 mm bar along it, not at 45°.
+- **The bars' raw ratio depends on the bar as much as on the material.** The same every
+  way, the standing 1.6 mm bar is already 6 % softer than the flat one; of 2 mm bars, whose
+  flat print has two layers of sparse infill, the flat one is 5 % softer. Comparing each bar
+  with itself solved the same every way takes that out.
+- **The cells hold 0.87–0.92 of the sheet's stiffness on a solid bar**: a single wall
+  fills 0.88 of its cell, and plastic above a full cell is lost to the cap (4 % of a bar's).
+  The sheet's specimens are not solid either.
+- **The slicer's clock differs most on the flat bracket**: walls ×1.4–1.7, solid infill
+  ×2.2, travel ×2.8. Small layers are slowed to the preset's 4 s, but a 4 × 1.6 mm bar
+  standing up still prints a layer a second: the slicer will not go below 20 mm/s.
+- **The bond floor for PLA Basic is 0.75** (layer below at the chamber's temperature).
+  The flat bracket sits near it almost everywhere (median 0.83), the cube at 0.95.
+
+### Open items from M7
+- The bond model's parameters are assumptions (35 °C chamber, 20 s, fan 7× at full) and the
+  specimens' layer time and fan are guessed from the preset. M10 calibrates.
+- How much stiffer along a line than across it is unknown; E₂ = E₁. M10's 0°/45° coupons.
+- The bond between neighbouring beads in a layer (Y_t) is not computed.
+- A cell's time is a mean: where lines of one layer cross, the gap to the cell above reads
+  short.
+- Line-direction glyphs are not drawn; the cells view colours by direction instead.
+- φ is still capped at 1, and the far walls of a part still straddle two cell columns
+  (M4); both cost a few percent of stiffness.
+
 ## Next
-- M7 print-aware material: line directions per cell, orthotropic stiffness (E in the
-  plane and across the layers are in the material files now), feature classes, and the
-  bond factor from nozzle temperature, fan and time gaps (PLAN.md §6, §13). The bond
-  factor is 1 at the conditions the sheet's specimens were printed at, which the material
-  files record.
+- M8 failure and results: the criteria of PLAN.md §8 in each cell's own frame (the cell's
+  line direction is in `CellGrid.Direction`, its constitutive matrix in `CellStiffness`),
+  strengths from the material files, Z_t × the bond factor (`BondModel.Cells`), safety
+  factor, governing mode, weakest spot, probe; refinement marking by failure index.
 - Open items from M5:
   - A result stays on screen when the interfaces or the load case change after it; the
     summary names the load case it belongs to, but nothing marks it as out of date.
@@ -569,6 +653,3 @@ Read [PLAN.md](PLAN.md) for the design. This file only tracks where things stand
   - `FemMesh.Build` still uses dense per-grid-slot arrays (8 bytes per slot of the
     bounding box). Fine up to a few hundred million slots; replace before very large,
     sparse parts.
-- Open item for M7: our feed-rate segment times ignore acceleration (≈2× short on solid
-  infill). Scale per feature using `result.json` `feature_type_times` when the bond model
-  needs layer times.

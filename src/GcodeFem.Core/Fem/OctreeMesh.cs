@@ -414,12 +414,12 @@ public sealed class OctreeMesh
 
     /// <summary>
     /// Downscaling: each bead cell's stress at its centre, from its leaf's displacement field and
-    /// the cell's own stiffness E φ. Returns σxx, σyy, σzz, τxy, τyz, τzx per cell and von Mises.
+    /// the cell's own stiffness φ C. Returns σxx, σyy, σzz, τxy, τyz, τzx per cell and von Mises.
     /// </summary>
-    public (float[] Stress, float[] VonMises) CellStresses(double[] nodeDisplacements, IsotropicMaterial material)
+    public (float[] Stress, float[] VonMises) CellStresses(double[] nodeDisplacements)
     {
         var mesh = Forest.Mesh;
-        var unit = new IsotropicMaterial(1, material.PoissonRatio).Constitutive();
+        var cells = Forest.Cells;
         var stress = new float[6 * mesh.Cells.Length];
         var vonMises = new float[mesh.Cells.Length];
         Parallel.For(0, mesh.Cells.Length, () => new double[6 * HexElement.Dofs], (e, _, b) =>
@@ -444,13 +444,14 @@ public sealed class OctreeMesh
                 }
                 strain[r] = sum;
             }
-            var stiffness = material.YoungsModulus * mesh.Fill[e];
+            var fill = mesh.Fill[e];
+            var c = cells.Constitutive(cells.Kind[e]);
             Span<double> s = stackalloc double[6];
             for (var r = 0; r < 6; r++)
             {
                 double sum = 0;
-                for (var m = 0; m < 6; m++) sum += unit[r * 6 + m] * strain[m];
-                s[r] = sum * stiffness;
+                for (var m = 0; m < 6; m++) sum += c[r * 6 + m] * strain[m];
+                s[r] = sum * fill;
                 stress[6 * e + r] = (float)s[r];
             }
             vonMises[e] = (float)Math.Sqrt(0.5 * ((s[0] - s[1]) * (s[0] - s[1]) + (s[1] - s[2]) * (s[1] - s[2]) + (s[2] - s[0]) * (s[2] - s[0]))

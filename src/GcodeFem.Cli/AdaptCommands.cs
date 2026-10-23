@@ -13,6 +13,8 @@ static class AdaptCommands
         var solver = LinearSolvers.ByName(commandLine.Option("solver") ?? "auto");
         var mesh = FemMesh.Build(problem.Grid, problem.MinFill, problem.LoadCase);
         FemCommands.PrintMesh(mesh);
+        FemCommands.PrintLines(mesh);
+        FemCommands.PrintBonds(mesh, problem);
         FemCommands.PrintReach(mesh, problem.LoadCase);
         if (commandLine.Option("sweep") is { } variants) return Sweep(variants, commandLine, problem, mesh, solver);
         var options = Resolve(Options(commandLine, problem.MinFill), mesh, out var suggested);

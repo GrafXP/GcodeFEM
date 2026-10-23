@@ -17,8 +17,12 @@ public enum ViewMode { Model, Toolpaths, Cells, Results }
 
 public enum ResultQuantity { VonMises, Displacement, InterlayerStress, ElementSize }
 
-/// <summary>What the cells view colours by: how full each cell is, or which interface its faces belong to.</summary>
-public enum CellColouring { Fill, Interfaces }
+/// <summary>
+/// What the cells view colours by: how full each cell is, which way its lines run, their line
+/// type, how well the cell has bonded to the one below and how long after it it was printed, or
+/// which interface its faces belong to.
+/// </summary>
+public enum CellColouring { Fill, Direction, Feature, Bond, Gap, Interfaces }
 
 /// <summary>What the viewport should show; a snapshot of the view settings taken when a redraw starts.</summary>
 /// <param name="LayerLow">First layer shown, and <paramref name="LayerHigh"/> the one after the last.</param>
@@ -54,6 +58,9 @@ sealed class PrintJob
     /// <summary>The cells holding enough plastic to count, whether or not a load case reaches them.</summary>
     public required CellIndex[] Cells { get; init; }
 
+    /// <summary>Per cell of <see cref="Cells"/>: its bond to the cell below, against the specimens of its material's data sheet.</summary>
+    public LayerBonds? Bonds { get; set; }
+
     public SolvedJob? Solved { get; set; }
 
     // Built on first use by the scene builder, which runs one build at a time.
@@ -68,9 +75,10 @@ sealed class SolvedJob
     /// <param name="loadCase">The name of the load case that was solved.</param>
     /// <param name="reach">What each interface got hold of on the cells.</param>
     /// <param name="material">The material it was solved with, and how the filament came by it.</param>
-    public SolvedJob(AdaptiveResult result, string loadCase, IReadOnlyList<InterfaceReach> reach, MaterialMatch material)
+    /// <param name="bonds">Per cell of the result's mesh: its bond to the cell below.</param>
+    public SolvedJob(AdaptiveResult result, string loadCase, IReadOnlyList<InterfaceReach> reach, MaterialMatch material, LayerBonds bonds)
     {
-        (LoadCaseName, Reach, Material) = (loadCase, reach, material);
+        (LoadCaseName, Reach, Material, Bonds) = (loadCase, reach, material, bonds);
         Result = result;
         NodeDisplacements = ResultFields.NodeDisplacements(result);
         Displacement = ResultFields.DisplacementMagnitude(result.Mesh, NodeDisplacements);
@@ -83,6 +91,7 @@ sealed class SolvedJob
     public string LoadCaseName { get; }
     public IReadOnlyList<InterfaceReach> Reach { get; }
     public MaterialMatch Material { get; }
+    public LayerBonds Bonds { get; }
     public Vector3[] NodeDisplacements { get; }
     public float[] Displacement { get; }
     public float[] InterlayerStress { get; }
@@ -111,6 +120,8 @@ static class SceneBuilder
     static readonly Vector4 Unreached = Palette.Hex("#5a5a57");
 
     static readonly LegendEntry[] InterfaceEntries = [new(0, "Held: a mount", InterfaceGlyphs.Mount), new(1, "Loaded", InterfaceGlyphs.Load)];
+
+    static readonly LegendEntry NothingBelow = new(0, "Nothing below: no layer line", Unreached);
 
     /// <param name="model">The part turned as the rotation fields say, for the model view.</param>
     /// <param name="rotation">Part frame → print frame as the rotation fields say; forces are given in the part frame.</param>
@@ -180,12 +191,39 @@ static class SceneBuilder
                 Caption: caption);
         }
 
-        var scale = ColourScale.Sequential(0, 1);
-        var colours = surface.VertexColours(e => scale.Colour(grid.Fill(cells[e].I, cells[e].J, cells[e].K)));
-        return new Scene(
-            Cells: Mesh(surface.Positions, surface.Normals, surface.Indices, colours),
-            Legend: new Legend("Fill: share of the cell holding plastic", "", [], scale),
-            Caption: caption);
+        Vector4[] colours;
+        Legend legend;
+        switch (state.CellColouring)
+        {
+            case CellColouring.Direction:
+                colours = surface.VertexColours(e => CellColours.DirectionColour(CellColours.DirectionGroup(grid.Direction(cells[e].I, cells[e].J, cells[e].K))));
+                legend = CellColours.DirectionLegend();
+                break;
+            case CellColouring.Feature:
+                var features = cells.Select(c => grid.Feature(c.I, c.J, c.K) ?? FeatureClass.Other).ToArray();
+                colours = surface.VertexColours(e => CellColours.FeatureColour(features[e]));
+                legend = CellColours.FeatureLegend(features);
+                break;
+            case CellColouring.Bond when job.Bonds is { } bonds:
+                // From the weakest bond up to that of the specimens; a cell with nothing below has no layer line.
+                var weakest = Enumerable.Range(0, cells.Length).Where(e => !float.IsNaN(bonds.Gap[e])).Select(e => bonds.Factor[e]).DefaultIfEmpty(1).Min();
+                var bond = ColourScale.Sequential(MathF.Min(weakest, 0.99f), 1);
+                colours = surface.VertexColours(e => float.IsNaN(bonds.Gap[e]) ? Unreached : bond.Colour(bonds.Factor[e]));
+                legend = new Legend("Bond to the layer below, of the data sheet's specimens", "", [NothingBelow], bond);
+                break;
+            case CellColouring.Gap when job.Bonds is { } bonds:
+                var longest = Enumerable.Range(0, cells.Length).Where(e => !float.IsNaN(bonds.Gap[e])).Select(e => bonds.Gap[e]).DefaultIfEmpty(1).Max();
+                var gap = ColourScale.Sequential(0, longest);
+                colours = surface.VertexColours(e => float.IsNaN(bonds.Gap[e]) ? Unreached : gap.Colour(bonds.Gap[e]));
+                legend = new Legend("Time since the layer below was printed there", "s", [NothingBelow], gap);
+                break;
+            default:
+                var fill = ColourScale.Sequential(0, 1);
+                colours = surface.VertexColours(e => fill.Colour(grid.Fill(cells[e].I, cells[e].J, cells[e].K)));
+                legend = new Legend("Fill: share of the cell holding plastic", "", [], fill);
+                break;
+        }
+        return new Scene(Cells: Mesh(surface.Positions, surface.Normals, surface.Indices, colours), Legend: legend, Caption: caption);
     }
 
     static Scene Results(ViewState state, PrintJob job, SolvedJob solved)

@@ -1,4 +1,5 @@
 using System.Numerics;
+using GcodeFem.Core.Fem;
 using GcodeFem.Core.Gcode;
 using GcodeFem.Core.Geometry;
 using GcodeFem.Core.Slicing;
@@ -49,6 +50,50 @@ public class BambuIntegrationTests
 
         Assert.Contains(Filament, names);
         Assert.DoesNotContain(names, n => n.Contains("@BBL A1M", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// The check of M7: a bar printed lying flat is stiffer along its length than one standing up, by the
+    /// data sheet's ratio of its modulus in the plane of the layers to that across them. Each bar is
+    /// solved twice, with the material and with its in-plane modulus every way; the second takes out
+    /// what the slicer's lines and the cells alone make of the two bars.
+    /// </summary>
+    [BambuFact]
+    public async Task A_bar_printed_upright_is_softer_by_the_sheets_ratio()
+    {
+        var bambu = BambuInstallation.Locate();
+        var slicer = new BambuSlicer(bambu, SystemPresets(), BambuSlicer.DefaultCacheDirectory);
+        var material = new OrthotropicMaterial(2580, 2580, 2060, 0.35); // Bambu PLA Basic
+        var isotropic = new OrthotropicMaterial(2580, 2580, 2580, 0.35);
+        var bar = MeshFactory.Box(Vector3.Zero, new Vector3(60, 4, 1.6f));
+
+        var moduli = new List<(double Printed, double Isotropic)>();
+        foreach (var (turned, axis) in new[] { (Vector3.Zero, Axis.X), (new Vector3(0, -90, 0), Axis.Z) })
+        {
+            var result = await slicer.SliceAsync(new SliceRequest(bar, Orientation.FromEulerDegrees(turned.X, turned.Y, turned.Z), Machine, Process, Filament));
+            var toolpath = GcodeParser.Parse(result.GcodePath);
+            var grid = Voxelizer.Voxelize(toolpath, result.Placement, result.PrintMesh.Bounds, PrintClock.Calibrated(toolpath, result.Report.FeatureSeconds));
+            var loadCase = LoadCase.ClampAndPush(grid.OccupiedBounds(0.05f), axis, fixMax: false, 20 * LoadCase.Unit(axis));
+            var mesh = FemMesh.Build(grid, 0.05f, loadCase);
+            moduli.Add((Strain(StaticAnalysis.Run(mesh, material, loadCase, LinearSolvers.Best()), axis), Strain(StaticAnalysis.Run(mesh, isotropic, loadCase, LinearSolvers.Best()), axis)));
+        }
+
+        // Same bar, same force: the moduli stand as the strains do, the other way round.
+        var (flat, upright) = (moduli[0], moduli[1]);
+        var printed = upright.Printed / flat.Printed;
+        var geometry = upright.Isotropic / flat.Isotropic;
+        Assert.Equal(2580.0 / 2060, printed / geometry, 2);
+        Assert.InRange(printed, 0.9 * 2580 / 2060, 1.1 * 2580 / 2060); // measured: 1.325, the cells of the upright bar being 6 % softer
+
+        static double Strain(FemResult fem, Axis axis)
+        {
+            var mesh = fem.Mesh;
+            var planes = Enumerable.Range(0, mesh.NodeCount).Select(n => LoadCase.Component(mesh.NodePosition(n), axis)).Distinct().Order().ToArray();
+            var (from, to) = (planes[planes.Length / 4], planes[3 * planes.Length / 4]);
+            double Shift(float plane) => Enumerable.Range(0, mesh.NodeCount).Where(n => LoadCase.Component(mesh.NodePosition(n), axis) == plane)
+                .Average(n => LoadCase.Component(fem.Displacement(n), axis));
+            return (Shift(to) - Shift(from)) / (to - from);
+        }
     }
 
     [BambuFact]

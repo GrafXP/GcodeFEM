@@ -93,8 +93,8 @@ Gotchas, all handled in code:
   1316.16 mm = 109.71 mm purge + 1206.45 mm part, which the parser matches exactly.
 - Our feed-rate times are close to the slicer's for walls and sparse infill, but about 2×
   short for short-segment features (solid infill, bottom surface) because acceleration is
-  ignored. To revisit for the bond model (M7): scale per feature with the slicer's own
-  `feature_type_times`.
+  ignored. Since M7 `PrintClock` stretches each line type to the slicer's own
+  `feature_type_times` (§6).
 
 **What the G-code gives us**:
 
@@ -203,7 +203,7 @@ Units: mm, N, MPa (= N/mm²), s, °C everywhere.
 | occupied, fill fraction φ | deposited bead volume in the cell (width × height × length, cross-checked with E) / cell volume, capped at 1 |
 | line direction θ | volume-weighted direction of the segments in the cell (mod 180°), plus spread where lines overlap (wall corners, wall↔infill) |
 | feature | volume-weighted: outer wall / inner wall / solid infill / sparse infill / top / bottom / bridge. Support is excluded from the part. |
-| deposition time | from feed rates along the G-code → time gap to the cell below and to the neighbouring bead |
+| deposition time | from feed rates along the G-code, stretched to the slicer's own times (M7) → time gap to the cell below and to the neighbouring bead |
 | bond factor | nozzle temp, fan, and those time gaps (below) |
 
 ### Rasterising diagonal lines
@@ -222,8 +222,11 @@ is calibrated with 0° vs 45° raster bars (M10).
 Orthotropic in a local frame: 1 = line direction θ, 2 = in-plane across the line,
 3 = build Z.
 - E₁ = E_xy from the TDS.
-- E₃ = E_z from the TDS (or E_xy × ratio if not given).
-- E₂ = bead-to-bead, defaulting to E₃. It is raised where the cell's directions spread.
+- E₃ = E_z from the TDS (E_xy if not given).
+- E₂ = bead-to-bead. First planned to default to E₃; since M7 it defaults to E₁, as the
+  sheets give no in-plane anisotropy and E₃ would contradict their own flat specimens
+  (What M7 built, below). Where the cell's directions spread, E₁ and E₂ are mixed by
+  their shares.
 - Everything is scaled by φ.
 
 ### Strength per cell
@@ -235,10 +238,12 @@ Orthotropic in a local frame: 1 = line direction θ, 2 = in-plane across the lin
 
 ### Print temperatures → bond factor
 Print temperatures are the only temperature input; service temperature is out of scope.
-- v1: a calibratable table over nozzle temp and fan %, adjusted by the time gap to the cell
-  below. A long gap means a colder interface and a weaker bond.
+- v1 was to be a calibratable table over nozzle temp and fan %, adjusted by the time gap to
+  the cell below. A long gap means a colder interface and a weaker bond.
 - Later: a cooling + reptation/healing model that turns the interface temperature at
   deposition into bond strength.
+- M7 built a small version of the second instead of the table: cooling of the layer below,
+  the interface temperature, healing above the glass transition (What M7 built, below).
 
 ### Size and cost (measured in M2)
 The printed 20 mm cube (3.7 g of PLA, X1C, 0.20 Standard) gives:
@@ -251,6 +256,152 @@ around **1 M DOF ≈ 7–8 g of PLA** on the 8 GB laptop and around 4 M DOF ≈ 
 32 GB desktop.
 The octree solve (§7.2) only goes down to bead resolution where stress is high, so the
 cost follows the size of the hotspots, not the size of the part.
+
+### What M7 built
+
+**Every cell keeps how it was printed** (`CellGrid`, filled by `Voxelizer`). Each piece of
+bead the voxelizer drops into a cell brings its line's direction, line type, time, nozzle
+temperature and fan, weighted by its volume:
+
+| Per cell | How |
+| --- | --- |
+| line direction θ and spread | the eigenvectors of the in-plane orientation tensor Σ v d dᵀ. The spread is the share of the plastic running across the main direction: 0 for one line, ½ where two cross in equal parts (corners, grid infill) |
+| line type | the class holding most of the plastic: outer wall, inner wall, sparse infill, solid infill, top, bottom, bridge (both kinds), other (gap infill, overhang wall, ironing, floating vertical shell) |
+| deposition time | volume-weighted mean, on the calibrated clock below |
+| nozzle temperature, fan | volume-weighted means |
+
+- The sums take 60 bytes per cell slot of a block that holds material, on top of the 4 of
+  the volume (15 MB for the cube). Plastic that says nothing of its lines (`CellGrid.Solid`
+  in tests and benchmarks) counts as spread fully: the same every way in the plane.
+- Checked: a bead along X gives its cells θ = 0 and spread 0, a 45° bead 45° in every cell
+  it touches, two crossing beads spread ½; the cube's outer walls run along its sides.
+
+**The clock is stretched to the slicer's** (`PrintClock`). Feed-rate times leave out
+acceleration. Bambu Studio's result.json has its own seconds per line type, and each line
+type's segments are stretched to match, the moves between them to its travel time. Stretches
+outside 1–4 are taken for a mismatch and not applied.
+
+| Measured | walls | sparse infill | solid infill | top | bottom | travel |
+| --- | --- | --- | --- | --- | --- | --- |
+| cube | 1.04–1.13 | 1.10 | 1.87 | 2.15 | 2.43 | 3.05 |
+| 40 mm bracket | 1.41–1.66 | 1.78 | 2.18 | 2.65 | 3.09 | 2.82 |
+
+**Stiffness per cell** (`OrthotropicMaterial`, `CellStiffness`). Orthotropic in the line's
+frame: E₁ along the line, E₂ across it in the plane, E₃ across the layers, one Poisson's
+ratio.
+
+- The other Poisson's ratios and the shear moduli follow **Huber's rule**:
+  ν_ij = ν √(E_i / E_j), G_ij = √(E_i E_j) / 2(1 + ν). That is the isotropic matrix with
+  each direction scaled, so it stays positive definite, and with one modulus it is the
+  isotropic material. No sheet gives more than one ν, nor any shear modulus.
+- Turned about Z to the cell's direction (C' = M C Mᵀ). Where lines cross, the two in-plane
+  moduli are mixed by their shares.
+- Cells share an element matrix by layer height, direction (5° steps) and spread (steps of
+  1/8). A material that is the same every way in the plane needs one per layer height, as
+  before. The octree sums each cell's own matrix into its element, so coarse elements carry
+  the directions of their cells (a full element of slanted lines is the exact brick: tested).
+- **What a material file gives: E₁ = E₂ = E_xy, E₃ = E_z.** That is not what this plan said
+  at first (E₂ = E₃). The sheet's in-plane value comes from flat specimens whose line pattern
+  it does not show, and it says nothing of how much stiffer a line is along than across.
+  With E₂ = E₃ a solid layer at ±45° would come out a tenth softer than the sheet's own
+  number (laminate theory: 2309 against 2580 MPa for PLA Basic), with no data behind that.
+  `OrthotropicMaterial` takes any E₂, and `--across-line` sets it in the CLI; the 0°/45°
+  coupons of M10 are to measure it.
+  - How much that choice matters on a real slice depends on where the slicer puts ±45°
+    lines. On a 6 × 1.6 mm bar Bambu Studio laid the solid infill along the bar and only
+    the top and bottom at 45°: E₂ = E₃ makes it 2 % softer (2368 → 2322 MPa).
+
+**The check of the milestone: a bar lying flat and standing up** (`gcodefem bars`, and a
+Bambu test). A bar of 60 × 4 × 1.6 mm, which prints solid both ways, is sliced flat and
+turned up on its end (0, −90, 0), clamped at one end and pulled along its length. E is read
+off the strain between a quarter and three quarters of the length, on the bar's own
+section. Each bar is solved twice: with the material, and with its in-plane modulus every
+way. The second leaves only what the slicer's lines and the cells make of the two bars, so
+the ratio of the two ratios is what the material adds.
+
+| Filament | E flat / upright, MPa | Ratio | The same every way | What the material adds | Sheet E_xy / E_z |
+| --- | --- | --- | --- | --- | --- |
+| Bambu PLA Basic | 2367 / 1787 | 1.325 | 1.058 | **1.252** | 1.252 |
+| Bambu PETG HF | 1627 / 1310 | 1.242 | 1.057 | **1.175** | 1.175 |
+| Bambu ABS | 1978 / 1667 | 1.186 | 1.057 | **1.122** | 1.122 |
+
+- The material does exactly what the sheet says. The ratio of the printed bars is 6 %
+  higher than the sheet's because, the same every way, the standing bar already comes out
+  6 % softer than the flat one. Its cells hold 94 % plastic against the flat bar's 96 %, its
+  layers are walls only, and in a tenth of its cells lines cross.
+- That second factor depends on the bar: 0.95 for a 2 mm bar, which has two layers of
+  sparse infill lying flat (88 % plastic against 94 %), 0.86 for 10 × 4 mm (59 % and 60 %
+  plastic). The material's own ratio is 1.252 for every one of them.
+- On their own section the bars come out at 0.92 (flat) and 0.87 (upright) of the sheet's
+  moduli. A cell holds the bead's real cross-section (a single wall line fills 0.88 of its
+  cell), and plastic above a full cell is lost to the cap at φ = 1 (4 % of the plastic of the
+  2 mm bar). A specimen of the sheet is not solid either, so some of this is counted twice.
+
+**What it does to a part.** The bracket of §10, "Pull sideways":
+
+| Printed | Material | Peak von Mises | Loaded face moves, along the force |
+| --- | --- | --- | --- |
+| flat | the same every way (as in M6) | 18.44 MPa | 0.945 mm |
+| flat | orthotropic | 18.68 MPa | 0.947 mm |
+| on edge (90, 0, 0) | the same every way | 24.64 MPa | 0.903 mm |
+| on edge (90, 0, 0) | orthotropic | 25.49 MPa | **0.987 mm** |
+
+- Flat, the force bends the bracket in the plane of its layers, and E_z hardly enters. On
+  edge it bends it across them, and it comes out 9 % softer. The peak moves from one side of
+  the inner corner to the other.
+- The printed cube under 100 N: 38 CG iterations where the isotropic matrix took 29; setup
+  and solve 7.3 s. Voxelizing with the print sums takes 0.15 s.
+
+**The bond across a layer line** (`BondModel`, `BondReference`). Per cell: how well it has
+bonded to the cell below, as a share of the sheet's specimens. Not the table this plan
+foresaw for v1, but the small physical model it put off for later, as it needs no more
+invented numbers than a table would and gives them a meaning:
+
+1. The cell below has cooled since it was printed: Newton's law towards the chamber
+   (35 °C), with a time constant of 20 s in still air and 1 + 6 × fan times shorter.
+2. The bead lands; the layer line takes the mean of the two temperatures, as two bodies of
+   one plastic in contact do.
+3. The bond grows with how far that is above the glass transition; the factor is that
+   excess over the specimens', capped at 1, since the sheet's numbers are the best the
+   plastic can do.
+
+- The specimens' conditions: the sheet's nozzle temperature and glass transition (40 of the
+  45 materials give the first; ABS, ASA and TPU sheets give no glass transition, and the
+  usual one is assumed and said). No sheet says how long a specimen's layers took or how
+  hard the fan blew; they are the filament preset's shortest layer time
+  (`slow_down_layer_time`, 4 s for PLA Basic) and its highest fan, on the view that a
+  small specimen prints at that.
+- A cell with nothing below (the first layer, or over air) has no layer line: factor 1,
+  and no time gap.
+- So a hotter nozzle bonds better, a long wait or a strong fan worse, and the bond stops
+  falling once the layer below is at the chamber's temperature: for PLA Basic at 220 °C
+  that is 0.75 of the specimens'.
+
+| Part | Bond across the layers, median and weakest |
+| --- | --- |
+| cube 20 mm | 0.95; layer 2 at 0.78, 14 s after the first |
+| 40 mm bracket, flat | 0.83, 98 % of the layer lines below 0.9; layer 37 at 0.75, 23 s after the one below (the solid top layers take longest) |
+| the same on edge | 0.94; layer 2 at 0.77 |
+| 4 × 1.6 mm bar standing up | 1.00: its layers come 1 s apart, as the slicer cannot slow below 20 mm/s |
+| PETG HF / ABS bar lying flat | weakest 0.92 / 1.00: less fan |
+
+- **The solve does not use it.** It weakens the strength across the layers (Z_t, §8),
+  which M8 checks. The stiffness keeps the sheet's E_z: poorer bonding is known to show far
+  more in the strength than in the stiffness, and E_z was measured across printed layer
+  lines already.
+- The cell's time is a mean. Where grid infill crosses itself, a cell's mean falls late in
+  its layer, and the cell above it reads a gap a few seconds shorter than the layer time.
+- The bond between neighbouring beads in a layer (Y_t) is not computed; §6 lets it default
+  to Z_t.
+
+**In the app.** The cells view colours by fill, by which way the lines run (along X, along
+Y, the two diagonals, or crossing), by line type (the colours of the toolpaths view), by the
+bond to the layer below, and by the time since the layer below; cells with nothing below are
+grey. The result names the stiffness in the plane and across the layers, and the range of
+the bond with its weakest layer. **In the CLI** `solve` and `adapt` print the clock's
+stretches, the cells by line type and how many have crossing lines, and the bond with what
+it is measured against and what of that is assumed. `--isotropic` solves with the in-plane
+modulus every way, `--across-line` sets E₂, and `gcodefem bars` is the check above.
 
 ---
 
@@ -323,7 +474,8 @@ double precision needs 33). So the default is now:
 
 **C# side (Core/Fem):**
 - **Element stiffness:** H8 element stiffness for rotated orthotropic material, cached per
-  (layer height × 5° angle bin × feature class), then scaled by φ per cell.
+  (layer height × 5° angle bin × spread step), then scaled by φ per cell (§6, M7). The line
+  type does not change the stiffness.
 - **Assembly and BCs:** parallel CSR assembly. Cells are processed in 8 parity colours
   that share no nodes, so it needs no locks. Each node has a 27-bit neighbour mask, which
   gives sorted columns and popcount slots. Fixed DOFs become identity rows and columns, so
@@ -463,11 +615,13 @@ How the options move that, on the 40 mm bracket:
   full solve; on the 18 g bracket it is 6× faster and uses a third of the memory.
 
 ### 7.3 Performance rules from day one
-- **Block-sparse storage.** Cell data lives in dense per-block arrays (structure of arrays,
-  4 bytes per cell: φ, angle bin, feature, bond), only for blocks with material. The
-  octree only decides which elements the FEM uses; it never copies cell data.
+- **Block-sparse storage.** Cell data lives in dense per-block arrays (structure of arrays),
+  only for blocks with material. Since M7 that is 64 bytes per cell slot rather than the 4
+  first planned: the volume, and the sums the line direction, line type, time, temperature
+  and fan are taken from (§6). The octree only decides which elements the FEM uses; it keeps
+  no more of each cell than its fill and which matrix it takes.
 - **No per-cell integration.** Leaf stiffness comes from a small cache (layer height × 5°
-  angle bin × feature class), scaled by φ.
+  angle bin × spread step), scaled by φ.
 - **Parallel wherever it's cheap:** voxelizing per layer, Galerkin coarsening per block,
   CSR assembly with a precomputed pattern, stress recovery.
 - **One matrix, many load cases.** Load cases with the same mounts share one matrix and
@@ -675,9 +829,10 @@ TPU-AMS. PETG HF and not PETG Basic was Claude's choice: the stiffness in PETG B
 sheet moved from 1460 to 2780 MPa between V2.0 and V3.0, and 1810 lies in the range usual
 for printed PETG. A tick in the materials window moves a stand-in.
 
-**What the solver does with a material, until M7:** the same stiffness in every direction,
-the one in the plane of the layers, with the assumed Poisson's ratio. Measured on the
-bracket of §10 ("Pull sideways"):
+**What the solver did with a material in M6:** the same stiffness in every direction,
+the one in the plane of the layers, with the assumed Poisson's ratio (since M7: the one
+across the layers too, §6; `--isotropic` still solves the M6 way). Measured on the bracket
+of §10 ("Pull sideways"):
 
 | Filament | Material | Peak von Mises | Loaded face moves, along the force |
 | --- | --- | --- | --- |
@@ -688,8 +843,9 @@ bracket of §10 ("Pull sideways"):
 
 - **The stresses of a part loaded by forces do not depend on its stiffness** while that is
   the same everywhere: 2500 → 2580 MPa changes the displacement by 2500 / 2580, to the three
-  digits shown, and the peak not at all. So until M7 brings stiffness that differs by direction, a material
-  moves the displacements only. PETG HF's peak differs because its slice does.
+  digits shown, and the peak not at all. So until M7 brought stiffness that differs by
+  direction, a material moved the displacements only. PETG HF's peak differs because its
+  slice does.
 - The strengths are in the files and unused until M8.
 
 **In the app.** The print panel says in a line what the selected filament will be solved
@@ -867,7 +1023,7 @@ height of the bed.
 | --- | --- | --- |
 | Model | the STL, turned by the rotation fields as they are typed | |
 | Toolpaths | every bead at its real width and height, coloured by line type, nozzle temperature, fan, speed, time or width | Line types can be switched off one by one. Above 400k beads, or on request, plain lines instead. |
-| Cells | the bead cells, coloured by fill φ | Line direction, feature and bond factor come with M7. |
+| Cells | the bead cells, coloured by fill φ | Since M7 also by line direction, line type, bond to the layer below and the time since it (§6). |
 | Results | von Mises, displacement, stress across the layers (σzz) or element size, on the deformed shape | Selecting a row of the pass table shows the mesh and the stresses as they were after that pass. |
 
 - The load case was still the stand-in from the CLI: clamp one side of the printed part,
@@ -915,9 +1071,9 @@ camera direction). Since M5 it also opens a study (`--study`), adds or selects a
 interface, sets its value, and clicks on the model at pixels read off an earlier
 screenshot (`--click "640,420;757,490"`), which goes through the same code as the mouse.
 
-Still to come: line-direction glyphs, feature and bond colouring of cells (M7), safety
-factor, probe and weakest-spot marker (M8), cuts other than by layer, the part frame and
-the Compare tab (M9), and cancelling a running solve.
+Still to come: line-direction glyphs on the cells (M7 colours them by direction instead),
+safety factor, probe and weakest-spot marker (M8), cuts other than by layer, the part frame
+and the Compare tab (M9), and cancelling a running solve.
 
 ---
 
@@ -936,7 +1092,7 @@ that comes early.
 | M4 | **Viewer**: model, toolpaths with layer slider, cells, octree overlay, result colouring | cube toolpaths coloured by feature; cantilever result and refinement shown. **Done 2026-10-07:** both shown, plus the cells view, the deformed shape and a pass-by-pass view of the refinement; details in §12. |
 | M5 | **Interfaces & loads editor**: picking, region growing, glyphs, load cases, project save/load | define a bracket's bolt holes + force in the UI and solve. **Done 2026-10-07:** the bracket with two bolt holes and a force on its tip is set up by clicking, saved as a study and solved, flat and standing on edge; details in §10. |
 | M6 | **Materials & TDS**: JSON DB, Bambu TDS import, filament → material mapping | PLA Basic + PETG HF generated from their PDFs with sources. **Done 2026-10-08:** both are generated from their sheets, every number with its page, and so is every other Bambu filament with a published sheet (45 materials); the solver takes the stiffness of the filament that was sliced; details in §9. |
-| M7 | **Print-aware material**: line directions, orthotropy, feature classes, bond factor from temps and time gaps | flat vs upright bar shows the TDS XY/Z ratio |
+| M7 | **Print-aware material**: line directions, orthotropy, feature classes, bond factor from temps and time gaps | flat vs upright bar shows the TDS XY/Z ratio. **Done 2026-10-23:** every cell keeps its line direction, line type, time, nozzle and fan; the stiffness is orthotropic per cell; the bars' ratio is the sheet's once what the cells alone do is taken out (1.252 for PLA Basic, 1.175 PETG HF, 1.122 ABS), 1.325 as printed; the bond factor is computed and shown, for M8 to use; details in §6. |
 | M8 | **Failure & results**: criteria, SF, governing mode, weakest spot, deformed shape, probe. The refinement marking switches from von Mises to the real failure index. | bracket shows its weakest layer line and failure load |
 | M9 | **Orientation study**: manual compare + automatic sweep (coarse screening, refine the best 3) and ranking | ranked table of orientations for a bracket |
 | M10 | **Calibrate**: print and break coupons (flat/upright bar, 0°/45° raster, hook) to tune the bond and diagonal factors; CalculiX cross-check | predicted vs measured failure loads recorded in `docs/calibration.md` |
@@ -950,8 +1106,17 @@ that comes early.
   loop needs. Real coupons in M10 tighten the numbers.
 - **A data sheet's numbers are the best the plastic can do.** Bambu's specimens are
   printed solid, dried and mostly annealed (§9). A real part is neither, and across the
-  layers it is weaker than the sheet says. Until the bond factor (M7) and the coupons
-  (M10), a safety factor from these strengths would be optimistic.
+  layers it is weaker than the sheet says. The bond factor (M7) takes some of that into
+  account once M8 uses it; until the coupons (M10) calibrate it, a safety factor from these
+  strengths would be optimistic.
+- **The bond factor is a model with assumed parameters** (§6): the chamber at 35 °C, a
+  cooling time of 20 s in still air, the fan cooling 7 times faster at full speed, the
+  specimens printed at the preset's shortest layer time. It gets the directions right (hotter
+  nozzle, shorter wait and less fan bond better) but its size is not measured. For PLA Basic
+  it runs from 1 down to 0.75. The chamber of an enclosed ABS or PC print is warmer than
+  35 °C, which the model does not know.
+- **How much stiffer a line is along than across is not known** (§6): the sheets give one
+  in-plane modulus, and it is used both ways. The 0°/45° coupons of M10 decide it.
 - **A stand-in is another filament's numbers.** Martin's own filaments (eSun, Sunlu,
   Prusament, …) have no material files yet and are solved with Bambu's material of the
   same type. The result says so, but it cannot say how far off that is. PLA+ and PLA

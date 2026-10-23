@@ -136,18 +136,7 @@ public static class ToolpathColours
     /// usually make up. Both bridge types share one, the rare part features share the last, and
     /// whatever is not part of the model is grey.
     /// </summary>
-    public static int Group(FeatureType feature) => feature switch
-    {
-        FeatureType.OuterWall => 0,
-        FeatureType.InnerWall => 1,
-        FeatureType.SparseInfill => 2,
-        FeatureType.InternalSolidInfill => 3,
-        FeatureType.TopSurface => 4,
-        FeatureType.BottomSurface => 5,
-        FeatureType.Bridge or FeatureType.InternalBridge => 6,
-        _ when feature.IsPartMaterial() => 7,
-        _ => NotPart,
-    };
+    public static int Group(FeatureType feature) => feature.IsPartMaterial() ? (int)feature.Class() : NotPart;
 
     public static Vector4 GroupColour(int group) => group < Palette.Categorical.Length ? Palette.Categorical[group] : Palette.Neutral;
 

@@ -102,7 +102,7 @@ public static class AdaptiveAnalysis
 
     sealed record Solved(OctreeMesh Octree, double[] NodeDisplacements, float[] Stress, float[] VonMises);
 
-    public static AdaptiveResult Run(CellGrid grid, IsotropicMaterial material, LoadCase loadCase, ILinearSolver solver, AdaptiveOptions? options = null, Action<AdaptivePass>? onPass = null)
+    public static AdaptiveResult Run(CellGrid grid, OrthotropicMaterial material, LoadCase loadCase, ILinearSolver solver, AdaptiveOptions? options = null, Action<AdaptivePass>? onPass = null)
     {
         options ??= new AdaptiveOptions();
         return Run(FemMesh.Build(grid, options.MinFill, loadCase), material, loadCase, solver, options, onPass);
@@ -110,7 +110,7 @@ public static class AdaptiveAnalysis
 
     /// <summary>Runs on a mesh that is already built (with the load case's fixtures).</summary>
     /// <param name="onPass">Called after every pass, for progress display.</param>
-    public static AdaptiveResult Run(FemMesh mesh, IsotropicMaterial material, LoadCase loadCase, ILinearSolver solver, AdaptiveOptions? options = null, Action<AdaptivePass>? onPass = null)
+    public static AdaptiveResult Run(FemMesh mesh, OrthotropicMaterial material, LoadCase loadCase, ILinearSolver solver, AdaptiveOptions? options = null, Action<AdaptivePass>? onPass = null)
     {
         options ??= new AdaptiveOptions();
         var maxDofs = options.MaxDofs ?? OctreeAdvisor.DofBudget();
@@ -144,7 +144,7 @@ public static class AdaptiveAnalysis
 
             watch.Restart();
             var nodeDisplacements = octree.NodeDisplacements(unknowns);
-            var (stress, vonMises) = octree.CellStresses(nodeDisplacements, material);
+            var (stress, vonMises) = octree.CellStresses(nodeDisplacements);
             var peak = 0;
             for (var e = 1; e < vonMises.Length; e++)
                 if (vonMises[e] > vonMises[peak]) peak = e;

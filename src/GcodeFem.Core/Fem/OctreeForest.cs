@@ -20,20 +20,26 @@ public sealed class OctreeForest
     const int BlockMask = (1 << BlockShift) - 1;
     const int MatrixLength = HexElement.Dofs * HexElement.Dofs;
 
-    readonly Dictionary<int, float[]> fill = [];       // active-cell fill per 8³ block; 0 = no cell
+    /// <summary>The active cells of one 8³ block: fill (0 = no cell) and which of <see cref="Cells"/>' matrices each takes.</summary>
+    sealed class CellBlock
+    {
+        public readonly float[] Fill = new float[1 << (3 * BlockShift)];
+        public readonly ushort[] Kind = new ushort[1 << (3 * BlockShift)];
+    }
+
+    readonly Dictionary<int, CellBlock> cells = [];
     readonly HashSet<long>[] occupied;                 // [level] boxes holding at least one active cell, levels 1..RootLevel
     readonly Dictionary<long, double[]?> leaves = [];  // leaf → its Galerkin stiffness (none at level 0)
-    readonly double[][] unitStiffness;                 // per layer: one full cell with E = 1
     readonly double[] z;                               // layer boundaries, continued above the part
-    readonly double youngsModulus, originX, originY, pitch;
+    readonly double originX, originY, pitch;
 
-    public OctreeForest(FemMesh mesh, IsotropicMaterial material, int rootLevel)
+    public OctreeForest(FemMesh mesh, OrthotropicMaterial material, int rootLevel)
     {
         if (rootLevel is < 0 or > MaxRootLevel)
             throw new ArgumentOutOfRangeException(nameof(rootLevel), $"Root level must be 0..{MaxRootLevel}.");
         Mesh = mesh;
         RootLevel = rootLevel;
-        youngsModulus = material.YoungsModulus;
+        Cells = new CellStiffness(mesh, material);
         var grid = mesh.Grid;
         (originX, originY, pitch) = (grid.Origin.X, grid.Origin.Y, grid.Pitch);
 
@@ -45,24 +51,14 @@ public sealed class OctreeForest
                 ? grid.ZBoundaries[k]
                 : grid.ZBoundaries[grid.SizeZ] + (k - grid.SizeZ) * (double)grid.CellHeight(grid.SizeZ - 1);
 
-        var unit = new IsotropicMaterial(1, material.PoissonRatio).Constitutive();
-        var byHeight = new Dictionary<float, double[]>();
-        unitStiffness = new double[grid.SizeZ][];
-        for (var k = 0; k < grid.SizeZ; k++)
-        {
-            var height = grid.CellHeight(k);
-            if (!byHeight.TryGetValue(height, out var ke))
-                byHeight[height] = ke = HexElement.Stiffness(grid.Pitch, grid.Pitch, height, unit);
-            unitStiffness[k] = ke;
-        }
-
         for (var e = 0; e < mesh.Cells.Length; e++)
         {
             var c = mesh.Cells[e];
             var key = BlockKey(c.I >> BlockShift, c.J >> BlockShift, c.K >> BlockShift);
-            if (!fill.TryGetValue(key, out var block))
-                fill[key] = block = new float[1 << (3 * BlockShift)];
-            block[Local(c.I, c.J, c.K)] = mesh.Fill[e];
+            if (!cells.TryGetValue(key, out var block))
+                cells[key] = block = new CellBlock();
+            block.Fill[Local(c.I, c.J, c.K)] = mesh.Fill[e];
+            block.Kind[Local(c.I, c.J, c.K)] = Cells.Kind[e];
         }
 
         occupied = new HashSet<long>[rootLevel + 1];
@@ -87,6 +83,10 @@ public sealed class OctreeForest
     }
 
     public FemMesh Mesh { get; }
+
+    /// <summary>The stiffness of the mesh's cells, from which every element's is summed.</summary>
+    public CellStiffness Cells { get; }
+
     public int RootLevel { get; }
     public int LeafCount => leaves.Count;
     public IEnumerable<OctreeLeaf> Leaves => leaves.Keys.Select(Decode);
@@ -110,11 +110,14 @@ public sealed class OctreeForest
         return false;
     }
 
-    /// <summary>The leaf's 24×24 stiffness as matrix × scale; bead cells share one matrix per layer height.</summary>
-    public (double[] Matrix, double Scale) Stiffness(OctreeLeaf leaf) =>
-        leaf.Level == 0
-            ? (unitStiffness[leaf.K], youngsModulus * Fill(leaf.I, leaf.J, leaf.K))
-            : (leaves[Key(leaf)]!, 1);
+    /// <summary>The leaf's 24×24 stiffness as matrix × scale; bead cells share their matrices (<see cref="CellStiffness"/>) and are scaled by their fill.</summary>
+    public (double[] Matrix, double Scale) Stiffness(OctreeLeaf leaf)
+    {
+        if (leaf.Level > 0) return (leaves[Key(leaf)]!, 1);
+        var block = cells[BlockKey(leaf.I >> BlockShift, leaf.J >> BlockShift, leaf.K >> BlockShift)];
+        var local = Local(leaf.I, leaf.J, leaf.K);
+        return (Cells.Matrix(block.Kind[local]), block.Fill[local]);
+    }
 
     /// <summary>
     /// Splits the given leaves into their occupied children and keeps the forest 2:1 balanced:
@@ -171,7 +174,7 @@ public sealed class OctreeForest
         (i & BlockMask) | ((j & BlockMask) << BlockShift) | ((k & BlockMask) << (2 * BlockShift));
 
     float Fill(int i, int j, int k) =>
-        fill.TryGetValue(BlockKey(i >> BlockShift, j >> BlockShift, k >> BlockShift), out var block) ? block[Local(i, j, k)] : 0;
+        cells.TryGetValue(BlockKey(i >> BlockShift, j >> BlockShift, k >> BlockShift), out var block) ? block.Fill[Local(i, j, k)] : 0;
 
     bool Occupied(OctreeLeaf box) =>
         box.Level == 0 ? Fill(box.I, box.J, box.K) > 0 : occupied[box.Level].Contains(Key(box));
@@ -206,10 +209,10 @@ public sealed class OctreeForest
     /// eight children. Trilinear interpolation composes exactly, so this equals summing every cell
     /// straight into the box's corners. Returns false when the box holds no active cell.
     /// </summary>
-    bool Accumulate(int level, int i0, int j0, int k0, float[]? block, double[] result, Workspace work)
+    bool Accumulate(int level, int i0, int j0, int k0, CellBlock? block, double[] result, Workspace work)
     {
         if (!occupied[level].Contains(Key(level, i0 >> level, j0 >> level, k0 >> level))) return false;
-        if (level <= BlockShift) block ??= fill[BlockKey(i0 >> BlockShift, j0 >> BlockShift, k0 >> BlockShift)];
+        if (level <= BlockShift) block ??= cells[BlockKey(i0 >> BlockShift, j0 >> BlockShift, k0 >> BlockShift)];
 
         Array.Clear(result);
         var half = 1 << (level - 1);
@@ -223,9 +226,10 @@ public sealed class OctreeForest
             double scale;
             if (level == 1)
             {
-                var cellFill = block![Local(i, j, k)];
+                var local = Local(i, j, k);
+                var cellFill = block!.Fill[local];
                 if (cellFill <= 0) continue;
-                (child, scale) = (unitStiffness[k], youngsModulus * cellFill);
+                (child, scale) = (Cells.Matrix(block.Kind[local]), cellFill);
             }
             else
             {

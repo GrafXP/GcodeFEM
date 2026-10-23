@@ -48,7 +48,7 @@ public sealed class FemResult
 /// <summary>Linear static analysis on bead cells: mesh → assemble → solve → cell stresses.</summary>
 public static class StaticAnalysis
 {
-    public static FemResult Run(CellGrid grid, IsotropicMaterial material, LoadCase loadCase, ILinearSolver solver, AnalysisOptions? options = null)
+    public static FemResult Run(CellGrid grid, OrthotropicMaterial material, LoadCase loadCase, ILinearSolver solver, AnalysisOptions? options = null)
     {
         options ??= new AnalysisOptions();
         var watch = Stopwatch.StartNew();
@@ -57,18 +57,19 @@ public static class StaticAnalysis
     }
 
     /// <summary>Solves on a mesh that is already built (with the load case's fixtures).</summary>
-    public static FemResult Run(FemMesh mesh, IsotropicMaterial material, LoadCase loadCase, ILinearSolver solver, AnalysisOptions? options = null, TimeSpan meshTime = default)
+    public static FemResult Run(FemMesh mesh, OrthotropicMaterial material, LoadCase loadCase, ILinearSolver solver, AnalysisOptions? options = null, TimeSpan meshTime = default)
     {
         options ??= new AnalysisOptions();
         var watch = Stopwatch.StartNew();
-        var system = Assembler.Assemble(mesh, material, loadCase);
+        var stiffness = new CellStiffness(mesh, material);
+        var system = Assembler.Assemble(mesh, stiffness, loadCase);
         var assemblyTime = watch.Elapsed;
 
         var u = new double[system.Size];
         var statistics = solver.Solve(system, u, options.Tolerance, options.MaxIterations);
 
         watch.Restart();
-        var (stress, vonMises) = CellStresses(mesh, material, u);
+        var (stress, vonMises) = CellStresses(mesh, stiffness, u);
         return new FemResult
         {
             Mesh = mesh,
@@ -83,10 +84,9 @@ public static class StaticAnalysis
         };
     }
 
-    /// <summary>Stress at each cell centre: σ = E φ C₁ B u.</summary>
-    static (float[] Stress, float[] VonMises) CellStresses(FemMesh mesh, IsotropicMaterial material, double[] u)
+    /// <summary>Stress at each cell centre: σ = φ C B u, with the cell's own C.</summary>
+    static (float[] Stress, float[] VonMises) CellStresses(FemMesh mesh, CellStiffness stiffness, double[] u)
     {
-        var unit = new IsotropicMaterial(1, material.PoissonRatio).Constitutive();
         var cells = mesh.Cells.Length;
         var stress = new float[6 * cells];
         var vonMises = new float[cells];
@@ -112,12 +112,13 @@ public static class StaticAnalysis
                 }
                 strain[r] = sum;
             }
-            var scale = material.YoungsModulus * mesh.Fill[e];
+            var scale = mesh.Fill[e];
+            var c = stiffness.Constitutive(stiffness.Kind[e]);
             Span<double> s = stackalloc double[6];
             for (var r = 0; r < 6; r++)
             {
                 double sum = 0;
-                for (var m = 0; m < 6; m++) sum += unit[r * 6 + m] * strain[m];
+                for (var m = 0; m < 6; m++) sum += c[r * 6 + m] * strain[m];
                 s[r] = sum * scale;
                 stress[6 * e + r] = (float)s[r];
             }

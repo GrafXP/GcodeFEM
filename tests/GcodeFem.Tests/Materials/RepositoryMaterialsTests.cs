@@ -1,10 +1,24 @@
 using System.Security.Cryptography;
 using GcodeFem.Core.Gcode;
+using GcodeFem.Core.Fem;
 using GcodeFem.Core.Materials;
 using GcodeFem.Core.Slicing;
 using GcodeFem.Tests.Slicing;
 
 namespace GcodeFem.Tests.Materials;
+
+/// <summary>
+/// Runs only where the data sheets the materials were read from are at hand in materials/tds. They are
+/// Bambu Lab's documents and are not in the public repository.
+/// </summary>
+public sealed class SheetsFactAttribute : FactAttribute
+{
+    public SheetsFactAttribute()
+    {
+        var folder = Path.Combine(TestPaths.Materials, "tds");
+        if (!Directory.Exists(folder) || Directory.GetFiles(folder, "*.pdf").Length == 0) Skip = "The data sheets are not in materials/tds.";
+    }
+}
 
 /// <summary>The material library that comes with the repository: Bambu Lab's filaments, each from its technical data sheet.</summary>
 public class RepositoryMaterialsTests
@@ -23,7 +37,7 @@ public class RepositoryMaterialsTests
     /// Reads every sheet again and compares: no number in a material file was typed, changed or
     /// attributed by hand, and the sheet in the repository is the one the file was made from.
     /// </summary>
-    [Fact]
+    [SheetsFact]
     public void Every_material_is_what_the_importer_reads_from_its_data_sheet()
     {
         var differences = new List<string>();
@@ -45,7 +59,7 @@ public class RepositoryMaterialsTests
         Assert.Empty(differences);
     }
 
-    [Fact]
+    [SheetsFact]
     public void Every_number_names_the_sheet_and_the_page_it_is_from_or_is_marked_as_assumed()
     {
         foreach (var material in Library.Materials)
@@ -86,7 +100,8 @@ public class RepositoryMaterialsTests
         Assert.Equal(new MaterialValue(34, 4, "ISO 527, GB/T 1040", "tds", 2), petg.Of(MaterialProperty.TensileStrengthXY));
         Assert.Equal(new MaterialValue(23, 4, "ISO 527, GB/T 1040", "tds", 2), petg.Of(MaterialProperty.TensileStrengthZ));
         Assert.Equal((31.5, 6.2, 10.6), (petg.Number(MaterialProperty.ImpactStrengthXY), petg.Number(MaterialProperty.NotchedImpactStrengthXY), petg.Number(MaterialProperty.ImpactStrengthZ)));
-        Assert.Equal((2580, 0.35, 1810, 0.38), (pla.Isotropic().YoungsModulus, pla.Isotropic().PoissonRatio, petg.Isotropic().YoungsModulus, petg.Isotropic().PoissonRatio));
+        Assert.Equal(new OrthotropicMaterial(2580, 2580, 2060, 0.35), pla.Stiffness());
+        Assert.Equal(new OrthotropicMaterial(1810, 1810, 1540, 0.38), petg.Stiffness());
     }
 
     [Fact]
@@ -111,6 +126,22 @@ public class RepositoryMaterialsTests
         var match = Library.Match(filament, type);
 
         Assert.Equal((standIn, MatchKind.ByType), (match.Material.Name, match.Kind));
+    }
+
+    [Fact]
+    public void A_layer_line_is_measured_against_how_the_sheets_specimens_were_printed()
+    {
+        var cube = GcodeParser.Parse(TestPaths.Sample("cube20_X1C_PLA.gcode"));
+
+        var pla = Library.Find("Bambu PLA Basic")!.Bonding(cube);
+        var abs = Library.Find("Bambu ABS")!.Bonding(cube);
+
+        // The sheet's nozzle temperature and glass transition; layer time and fan from the preset the cube was sliced with.
+        Assert.Equal((220, 60, 4, 1), (pla.NozzleTemperature, pla.GlassTransition, pla.LayerTime, pla.Fan));
+        Assert.Single(pla.Assumed);
+        // ABS's sheet gives no glass transition: the usual one is assumed, and said so.
+        Assert.Equal(105, abs.GlassTransition);
+        Assert.Contains(abs.Assumed, a => a.Contains("glass transition"));
     }
 
     [Fact]

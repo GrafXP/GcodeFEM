@@ -1,3 +1,4 @@
+using GcodeFem.Core.Fem;
 using GcodeFem.Core.Materials;
 
 namespace GcodeFem.Tests.Materials;
@@ -70,11 +71,20 @@ public sealed class MaterialFileTests : IDisposable
     }
 
     [Fact]
-    public void The_solver_gets_the_stiffness_in_the_plane_of_the_layers()
+    public void The_solver_gets_the_stiffness_in_the_plane_of_the_layers_and_across_them()
     {
-        var isotropic = Sample().Isotropic();
+        var stiffness = Sample().Stiffness();
 
-        Assert.Equal((2580, 0.35), (isotropic.YoungsModulus, isotropic.PoissonRatio));
+        Assert.Equal(new OrthotropicMaterial(2580, 2580, 2060, 0.35), stiffness);
+    }
+
+    [Fact]
+    public void A_material_without_a_modulus_across_the_layers_is_the_same_every_way()
+    {
+        var material = Sample();
+        material.Values.Remove(MaterialProperty.YoungsModulusZ);
+
+        Assert.True(material.Stiffness().IsIsotropic);
     }
 
     [Fact]
@@ -87,7 +97,7 @@ public sealed class MaterialFileTests : IDisposable
         MaterialFile.Save(material, path);
 
         Assert.Equal(new[] { MaterialProperty.YoungsModulusXY }, MaterialFile.Load(path).Lacking());
-        Assert.Contains("no Young's modulus, in the plane", Assert.Throws<InvalidDataException>(() => MaterialFile.Load(path).Isotropic()).Message);
+        Assert.Contains("no Young's modulus, in the plane", Assert.Throws<InvalidDataException>(() => MaterialFile.Load(path).Stiffness()).Message);
     }
 
     [Theory]
@@ -142,6 +152,6 @@ public sealed class MaterialFileTests : IDisposable
 
         Assert.All(generic.Values.Values, value => Assert.True(value.IsAssumed));
         Assert.Empty(generic.Problems());
-        Assert.Equal((2500, 0.35), (generic.Isotropic().YoungsModulus, generic.Isotropic().PoissonRatio));
+        Assert.Equal(new OrthotropicMaterial(2500, 2500, 2500, 0.35), generic.Stiffness());
     }
 }

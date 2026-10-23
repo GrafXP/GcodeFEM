@@ -86,8 +86,10 @@ static class SliceCommands
     /// <summary>
     /// Slices the model with the command line's options and parses the G-code, printing as it goes.
     /// With a <paramref name="study"/>, the model, its rotation and the presets come from there unless the command line says otherwise.
+    /// A <paramref name="model"/> and <paramref name="turned"/> given here go before both; <paramref name="brief"/> leaves out the table of line types.
     /// </summary>
-    public static async Task<(SliceResult Result, Toolpath Toolpath)> SliceAndParse(CommandLine commandLine, PartStudy? study = null)
+    public static async Task<(SliceResult Result, Toolpath Toolpath)> SliceAndParse(CommandLine commandLine, PartStudy? study = null,
+        TriangleMesh? model = null, Vector3? turned = null, bool brief = false)
     {
         var bambu = BambuInstallation.Locate();
         var selection = BambuSelection.Read(bambu);
@@ -95,8 +97,8 @@ static class SliceCommands
         var machine = commandLine.Option("machine") ?? selection.Machine;
         var process = commandLine.Option("process") ?? study?.Process ?? selection.Process;
         var filament = commandLine.Option("filament") ?? study?.Filament ?? selection.Filament;
-        var rotation = commandLine.Option("rot") is { } rot ? Text.Triple(rot, "rot") : study?.Rotation ?? default;
-        var mesh = study is null ? Stl.Read(commandLine.Positional[0]) : StudyCommands.Model(study);
+        var rotation = turned ?? (commandLine.Option("rot") is { } rot ? Text.Triple(rot, "rot") : study?.Rotation ?? default);
+        var mesh = model ?? (study is null ? Stl.Read(commandLine.Positional[0]) : StudyCommands.Model(study));
 
         var summary = presets.SummarizeFilament(filament);
         Console.WriteLine($"Bambu Studio {bambu.Version}");
@@ -120,11 +122,11 @@ static class SliceCommands
         var toolpath = GcodeParser.Parse(result.GcodePath);
         watch.Stop();
         Console.WriteLine();
-        PrintToolpath(toolpath, watch.Elapsed, result.Report);
+        PrintToolpath(toolpath, watch.Elapsed, result.Report, brief);
         return (result, toolpath);
     }
 
-    static void PrintToolpath(Toolpath toolpath, TimeSpan parseTime, SlicerReport? report)
+    static void PrintToolpath(Toolpath toolpath, TimeSpan parseTime, SlicerReport? report, bool brief = false)
     {
         var layers = toolpath.Layers;
         Console.WriteLine($"toolpath     {layers.Length} layers, z {layers.FirstOrDefault()?.Z:0.00} .. {layers.LastOrDefault()?.Z:0.00} mm, " +
@@ -143,6 +145,7 @@ static class SliceCommands
                           (report is null ? "" : $" (slicer with acceleration and start G-code: {Text.Duration(report.PrintSeconds)})"));
         if (toolpath.UnknownFeatures.Count > 0)
             Console.WriteLine($"  WARNING    unknown features, excluded from the part: {string.Join(", ", toolpath.UnknownFeatures)}");
+        if (brief) return;
 
         Console.WriteLine();
         Console.WriteLine($"  {"feature",-24}{"segments",9}{"length mm",12}{"volume mm3",12}{"time s",9}{(report is null ? "" : $"{"slicer s",10}")}  part");

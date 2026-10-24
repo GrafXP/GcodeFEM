@@ -98,4 +98,84 @@ public class VoxelizerTests
         // A solid PLA cube would shorten by F L / (E A) = 100·20 / (2500·400) = 0.002 mm; walls + 15 % infill are softer.
         Assert.InRange(top.Average(n => -result.Displacement(n).Z), 0.002, 0.02);
     }
+
+    /// <summary>The cells a line through these points (in pitches) runs through, on a grid of 20 × 20 cells.</summary>
+    static List<(int I, int J, float From, float To)> Walk(Vector2 from, Vector2 to)
+    {
+        var grid = new CellGrid(Vector2.Zero, Width, [0, Height], 20, 20);
+        var pieces = new List<(int I, int J, float From, float To)>();
+        Voxelizer.Walk(grid, new Vector3(from * Width, Height / 2), new Vector3(to * Width, Height / 2), pieces);
+        return pieces;
+    }
+
+    [Fact]
+    public void The_walk_cuts_a_line_where_it_crosses_into_the_next_cell()
+    {
+        // Along row 3 from the middle of cell 2 to the middle of cell 6: boundaries at 3, 4, 5 and 6 pitches.
+        var forth = Walk(new Vector2(2.5f, 3.5f), new Vector2(6.5f, 3.5f));
+        var back = Walk(new Vector2(6.5f, 3.5f), new Vector2(2.5f, 3.5f));
+
+        Assert.Equal([2, 3, 4, 5, 6], forth.Select(p => p.I));
+        Assert.Equal([6, 5, 4, 3, 2], back.Select(p => p.I));
+        Assert.All(forth.Concat(back), p => Assert.Equal(3, p.J));
+        float[] cuts = [0, 0.125f, 0.375f, 0.625f, 0.875f, 1];
+        for (var n = 0; n < 5; n++)
+        {
+            Assert.Equal(cuts[n], forth[n].From, 5);
+            Assert.Equal(cuts[n + 1], forth[n].To, 5);
+            Assert.Equal(cuts[n], back[n].From, 5);
+            Assert.Equal(cuts[n + 1], back[n].To, 5);
+        }
+    }
+
+    [Theory]
+    [InlineData(1.3f, 0.7f, 17.9f, 5.2f)]
+    [InlineData(17.9f, 5.2f, 1.3f, 0.7f)]
+    [InlineData(4.2f, 19.1f, 6.6f, 0.4f)]
+    [InlineData(3.5f, 3.5f, 3.9f, 3.2f)]
+    public void The_walk_goes_from_cell_to_neighbouring_cell_without_gaps(float x0, float y0, float x1, float y1)
+    {
+        var (from, to) = (new Vector2(x0, y0), new Vector2(x1, y1));
+
+        var pieces = Walk(from, to);
+
+        Assert.Equal((0f, 1f), (pieces[0].From, pieces[^1].To));
+        Assert.Equal(Math.Abs((int)x1 - (int)x0) + Math.Abs((int)y1 - (int)y0) + 1, pieces.Count);
+        for (var n = 0; n < pieces.Count; n++)
+        {
+            var middle = Vector2.Lerp(from, to, (pieces[n].From + pieces[n].To) / 2);
+            Assert.Equal(((int)middle.X, (int)middle.Y), (pieces[n].I, pieces[n].J));
+            if (n == 0) continue;
+            Assert.Equal(pieces[n - 1].To, pieces[n].From);
+            Assert.Equal(1, Math.Abs(pieces[n].I - pieces[n - 1].I) + Math.Abs(pieces[n].J - pieces[n - 1].J));
+        }
+    }
+
+    [Fact]
+    public void The_walk_leaves_no_slivers_at_corners_and_boundaries()
+    {
+        // Through two corners of the grid, and from one boundary to another.
+        var diagonal = Walk(new Vector2(0.5f, 0.5f), new Vector2(2.5f, 2.5f));
+        var between = Walk(new Vector2(1, 0.5f), new Vector2(3, 0.5f));
+
+        Assert.Equal([(0, 0), (1, 1), (2, 2)], diagonal.Select(p => (p.I, p.J)));
+        Assert.Equal([(1, 0), (2, 0)], between.Select(p => (p.I, p.J)));
+        Assert.All(diagonal.Concat(between), p => Assert.True(p.To - p.From > 0.1f));
+    }
+
+    [Fact]
+    public void The_walk_runs_through_cells_the_bead_filled()
+    {
+        var toolpath = Beads((new Vector2(1, 1), new Vector2(7, 5.3f)), (new Vector2(6, 0.5f), new Vector2(0.7f, 6.1f)), (new Vector2(2, 7.7f), new Vector2(8, 7.7f)));
+        var grid = Voxelizer.Voxelize(toolpath, Identity, Area);
+
+        // Where a line only clips the corner of a cell, the samples need not have put plastic there.
+        foreach (var segment in toolpath.Segments)
+        {
+            var pieces = new List<(int I, int J, float From, float To)>();
+            Voxelizer.Walk(grid, segment.Start, segment.End, pieces);
+            Assert.All(pieces.Where(p => (p.To - p.From) * segment.Length >= Width / 2),
+                p => Assert.True(grid.Volume(p.I, p.J, 0) > 0, $"cell ({p.I}, {p.J}) is empty"));
+        }
+    }
 }

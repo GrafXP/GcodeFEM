@@ -5,6 +5,7 @@ using GcodeFem.Core.Geometry;
 using GcodeFem.Core.Materials;
 using GcodeFem.Core.Slicing;
 using GcodeFem.Core.Study;
+using GcodeFem.Core.Visual;
 
 namespace GcodeFem.Tests.Slicing;
 
@@ -103,15 +104,18 @@ public class BambuIntegrationTests
     /// it bends in the plane of its layers; standing on edge, its upright leg bends across them and breaks
     /// at the layer line where it meets the base, at about half the load.
     /// </summary>
-    [BambuFact]
-    public async Task The_bracket_on_edge_breaks_at_a_layer_line_at_half_the_load()
+    /// <summary>The sample bracket sliced and solved, bolted down and pulled sideways at its tip.</summary>
+    sealed record SolvedBracket(Toolpath Toolpath, Placement Placement, FemMesh Mesh, CellFailure Failure);
+
+    /// <summary>The bracket lying flat and standing on edge, solved once for the tests that look at it.</summary>
+    static readonly Lazy<Task<SolvedBracket[]>> Brackets = new(async () =>
     {
         var study = StudyFile.Load(TestPaths.Sample("bracket40_holes.study.json"));
         var model = Stl.Read(study.ModelPath);
         var slicer = new BambuSlicer(BambuInstallation.Locate(), SystemPresets(), BambuSlicer.DefaultCacheDirectory);
         var materials = MaterialLibrary.Load(TestPaths.Materials);
 
-        var results = new List<(CellFailure Failure, FemMesh Mesh)>();
+        var results = new List<SolvedBracket>();
         foreach (var turned in new[] { Vector3.Zero, new Vector3(90, 0, 0) })
         {
             var rotation = Orientation.FromEulerDegrees(turned.X, turned.Y, turned.Z);
@@ -124,15 +128,55 @@ public class BambuIntegrationTests
             var bonds = new BondModel().Cells(grid, mesh.Cells, material.Bonding(toolpath), 0.05f);
             var cells = new CellStrength(mesh, material.Strength(out _)!, bonds.Factor);
             var adaptive = AdaptiveAnalysis.Run(mesh, material.Stiffness(), loadCase, LinearSolvers.Best(), new AdaptiveOptions(MinFill: 0.05f), strength: cells);
-            results.Add((adaptive.Failure!, mesh));
+            results.Add(new SolvedBracket(toolpath, slice.Placement, mesh, adaptive.Failure!));
         }
+        return [.. results];
+    });
 
-        var ((flat, _), (onEdge, edgeMesh)) = (results[0], results[1]);
+    [BambuFact]
+    public async Task The_bracket_on_edge_breaks_at_a_layer_line_at_half_the_load()
+    {
+        var brackets = await Brackets.Value;
+
+        var (flat, onEdge, edgeMesh) = (brackets[0].Failure, brackets[1].Failure, brackets[1].Mesh);
         Assert.NotEqual(FailureMode.LayerSeparation, flat.Mode[flat.Weakest]);
         Assert.Equal(FailureMode.LayerSeparation, onEdge.Mode[onEdge.Weakest]);
         Assert.Equal(onEdge.WeakestLayerLine, onEdge.Weakest);
         Assert.InRange(onEdge.SafetyFactor / flat.SafetyFactor, 0.4, 0.7); // measured: 0.870 / 1.583 = 0.55
         Assert.Equal(51, edgeMesh.Cells[onEdge.Weakest].K + 1); // where the upright leg meets the base, 10 mm up
+    }
+
+    /// <summary>
+    /// The check of M8b: the bracket's result on its print lines. Every line of the part runs through cells
+    /// of the solve, about one piece per cell. Standing on edge, with the sparse infill switched off, the
+    /// weakest line shown is the outer wall at the layer line that breaks. Lying flat, the weakest line is an
+    /// outer wall at the inner corner, a little safer than the weakest cell, which holds only the edges of beads.
+    /// </summary>
+    [BambuFact]
+    public async Task The_bracket_shows_its_weakest_wall_line_on_its_beads()
+    {
+        var brackets = await Brackets.Value;
+        var cut = brackets.Select(b => BeadPieces.Cut(b.Toolpath, b.Placement, b.Mesh)).ToArray();
+
+        for (var n = 0; n < brackets.Length; n++)
+        {
+            var (bracket, pieces) = (brackets[n], cut[n]);
+            var part = Enumerable.Range(0, pieces.Count).Where(p => bracket.Toolpath.Segments[pieces.Segments[p]].Feature.IsPartMaterial()).ToList();
+            Assert.All(part, p => Assert.True(pieces.Cells[p] >= 0));
+            Assert.InRange((double)part.Count / bracket.Mesh.Cells.Length, 0.9, 1.5); // measured: 1.11 flat, 1.03 on edge
+        }
+
+        var (onEdge, edgePieces) = (brackets[1], cut[1]);
+        var walls = edgePieces.Shown(onEdge.Toolpath, 0, int.MaxValue, f => f.Class() != FeatureClass.SparseInfill);
+        var weakest = edgePieces.Highest(onEdge.Failure.Index, walls);
+        var segment = onEdge.Toolpath.Segments[edgePieces.Segments[weakest]];
+        Assert.Equal((FeatureType.OuterWall, 51), (segment.Feature, segment.Layer + 1));
+        Assert.Equal(onEdge.Failure.SafetyFactor, onEdge.Failure.SafetyFactorOf(edgePieces.Cells[weakest]), 6);
+
+        var (flat, flatPieces) = (brackets[0], cut[0]);
+        var lowest = flatPieces.Highest(flat.Failure.Index, flatPieces.Shown(flat.Toolpath, 0, int.MaxValue, _ => true));
+        Assert.Equal(FeatureType.OuterWall, flat.Toolpath.Segments[flatPieces.Segments[lowest]].Feature);
+        Assert.InRange(flat.Failure.SafetyFactorOf(flatPieces.Cells[lowest]) / flat.Failure.SafetyFactor, 1, 1.05); // measured: 1.618 / 1.583
     }
 
     [BambuFact]

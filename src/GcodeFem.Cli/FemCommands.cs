@@ -12,9 +12,10 @@ namespace GcodeFem.Cli;
 static class FemCommands
 {
     /// <summary>A sliced, voxelized part with its mounts and loads.</summary>
+    /// <param name="Toolpath">What the cells were filled from, laid in the print frame by <paramref name="Placement"/>.</param>
     /// <param name="Bonding">What the bond of its layer lines is measured against.</param>
     /// <param name="Strength">What its cells are checked against; null if the material gives no strength.</param>
-    public sealed record Problem(CellGrid Grid, OrthotropicMaterial Material, LoadCase LoadCase, float MinFill, BondReference Bonding, PrintedStrength? Strength)
+    public sealed record Problem(Toolpath Toolpath, Placement Placement, CellGrid Grid, OrthotropicMaterial Material, LoadCase LoadCase, float MinFill, BondReference Bonding, PrintedStrength? Strength)
     {
         /// <summary>The cells' strengths on <paramref name="mesh"/>, each layer line as strong as it has bonded; null without strengths.</summary>
         public CellStrength? CellStrength(FemMesh mesh) =>
@@ -63,7 +64,7 @@ static class FemCommands
         }
         Console.WriteLine($"cells        grid {grid.SizeX} x {grid.SizeY} x {grid.SizeZ}, {grid.BlockCount} blocks of {CellGrid.BlockSize}^3; " +
                           $"voxelized in {voxelized.TotalSeconds:0.00} s, {grid.TotalVolume:0.0} mm3 deposited, {grid.LostVolume:0.000} mm3 outside the grid");
-        return new Problem(grid, material, loadCase, minFill, bonding, strength);
+        return new Problem(toolpath, result.Placement, grid, material, loadCase, minFill, bonding, strength);
     }
 
     /// <summary>The part's cells, with times stretched to the slicer's own (acceleration included).</summary>
@@ -216,8 +217,39 @@ static class FemCommands
             var mean = face.Aggregate(Vector3.Zero, (a, b) => a + b) / face.Count;
             Console.WriteLine($"  loaded face mean displacement {Text.Format(mean)} mm");
         }
-        if (problem.CellStrength(fem.Mesh) is { } cells) PrintFailure(fem.Mesh, cells, cells.Check(fem.Stress), problem.LoadCase);
+        if (problem.CellStrength(fem.Mesh) is { } cells)
+        {
+            var failure = cells.Check(fem.Stress);
+            PrintFailure(fem.Mesh, cells, failure, problem.LoadCase);
+            PrintWeakestLines(fem.Mesh, failure, problem);
+        }
         return 0;
+    }
+
+    /// <summary>
+    /// The result on the print lines: the lines cut at the cells they run through, and the weakest piece
+    /// of each line type, as the results view shows it with the other line types switched off.
+    /// </summary>
+    public static void PrintWeakestLines(FemMesh mesh, CellFailure failure, Problem problem)
+    {
+        var watch = Stopwatch.StartNew();
+        var pieces = BeadPieces.Cut(problem.Toolpath, problem.Placement, mesh);
+        var cut = watch.Elapsed;
+        var segments = problem.Toolpath.Segments;
+        var solved = Enumerable.Range(0, pieces.Count).Where(p => pieces.Cells[p] >= 0).ToList();
+        Console.WriteLine($"on the lines {pieces.Count:N0} pieces of line, {solved.Count:N0} of them in a cell of the solve ({(double)solved.Count / mesh.Cells.Length:0.00} per cell), " +
+                          $"cut in {cut.TotalSeconds:0.00} s; the weakest of each line type:");
+        foreach (var group in solved.GroupBy(p => segments[pieces.Segments[p]].Feature.Class()).OrderBy(g => -g.Max(p => failure.Index[pieces.Cells[p]])))
+        {
+            var p = group.MaxBy(p => failure.Index[pieces.Cells[p]]);
+            var (e, segment) = (pieces.Cells[p], segments[pieces.Segments[p]]);
+            Console.WriteLine($"  {group.Key.DisplayName().ToLowerInvariant(),-16} safety factor {failure.SafetyFactorOf(e):0.000}, {failure.Mode[e].DisplayName().ToLowerInvariant()}, " +
+                              $"layer {segment.Layer + 1} at {Text.Format(BeadPieces.Middle(pieces.Ends, p))}");
+        }
+        // A cell can be weakest that holds only the edges of beads whose middles run through its neighbours.
+        if (!solved.Any(p => pieces.Cells[p] == failure.Weakest))
+            Console.WriteLine($"  note       no line runs through the middle of the weakest cell (fill {mesh.Fill[failure.Weakest]:0.00}): on the lines, the lowest safety factor is " +
+                              $"{solved.Min(p => failure.SafetyFactorOf(pieces.Cells[p])):0.000} against {failure.SafetyFactor:0.000}");
     }
 
     /// <summary>

@@ -45,6 +45,7 @@ static class AdaptCommands
             FemCommands.PrintFailure(mesh, cells!, failure, problem.LoadCase);
             var level = adaptive.Octree.Leaves[adaptive.Octree.CellLeaf[failure.Weakest]].Level;
             if (level > 0) Console.WriteLine($"  WARNING    the weakest spot sits in an element of {1 << level}^3 cells: coarse elements read the stress too low, so the real safety factor is lower");
+            FemCommands.PrintWeakestLines(mesh, failure, problem);
         }
         Console.WriteLine($"cost         {adaptive.Final.Dofs:N0} DOF in the last of {adaptive.Passes.Count} passes, {adaptive.Time.TotalSeconds:0.00} s in total, peak working set {Text.Megabytes(memory)}");
         if (commandLine.Flag("reference"))

@@ -1291,6 +1291,60 @@ down: which wall line breaks first, which infill lines carry the load, at which 
 - **Earlier passes**: they kept the safety factor, von Mises and the element size per cell,
   and show those; the rest is of the last pass, as on the cells.
 
+### What M8b built
+
+The Result group's **Draw on** chooses the cells or the print lines (`--on lines` on the app's
+command line). On the lines, the line-type switches and thin lines of the toolpath view apply; they
+are the same switches.
+
+- **Cutting** (`Voxelizer.Walk`, `BeadPieces.Cut`): each bead's centre line, half a bead below the
+  nozzle, is cut exactly where it crosses a cell boundary of the voxelizer's grid, with the
+  voxelizer's rule for a point on a boundary. Each piece looks up its cell in the result's mesh. Two
+  small stretches are handed on:
+  - a stretch shorter than a thousandth of a cell, which rounding leaves where a line starts, ends or
+    crosses a corner on a boundary, goes to the next cell;
+  - where a slanted line clips the corner of a cell, the voxelizer's samples (4 per pitch along the
+    line, 4 across it) may have put none of its plastic there. A stretch outside the solve shorter
+    than half a pitch joins the piece next to it. Longer stretches outside the solve stay grey.
+- **Drawing**: `ToolpathGeometry` builds from pieces. A tube is cut flat where its bead is only cut
+  and pointed where the bead ends, so a bead whose pieces share one colour looks as in the toolpath
+  view. The toolpath view now draws whole beads through the same code.
+- **Deformed shape**: each end of a piece moves with the displacement at its point in its cell,
+  trilinear between the cell's corners. Pieces that meet at a cell boundary stay joined. The tube
+  keeps its bead's direction and cross-section as printed.
+- **Colours**: one colour function per quantity, shared with the cells. Lines with no cell are drawn
+  in the toolpath view's grey for what is not the model, with a legend entry when any are shown.
+- **Marks**: the arrow points at the **weakest line shown**, by the failure index of the pass shown
+  (von Mises without strengths), and the status bar names it: line type, layer, safety factor. With
+  the sparse infill switched off, that is the weakest of the walls and the solid layers. The weakest
+  layer line is outlined as on the cells. The coarse elements are not outlined on the lines: their
+  outlines lie on cell faces, which the round beads do not fill, and showed between them as dots.
+- **Probe**: a click finds the piece under it. The ray is tested against each piece shown, with the
+  bead's cross-section taken as an ellipse of its width and height, and past the end of a piece only
+  where its bead ends. The probe names the line (line type, layer, when it was printed on the
+  slicer's clock, nozzle temperature, fan), then gives its cell as on the cells, bond included.
+- **CLI**: `adapt` and `solve` print the pieces and the weakest piece of each line type. They also
+  say when no line runs through the middle of the weakest cell.
+
+Measured on the 40 mm bracket ("Pull sideways"):
+
+| | Flat | On edge |
+| --- | --- | --- |
+| Pieces | 105,727, 1.11 per cell | 97,661, 1.03 per cell |
+| Cut | 0.03 s, once per result | 0.03 s |
+| Redraw on the lines, tubes, deformed | 150–180 ms | 150 ms |
+| Weakest line | outer wall, layer 40, SF 1.618 | outer wall, layer 51, SF 0.870 |
+| Weakest cell | SF 1.583 in layer 1, half full, no line through its middle | the weakest line's cell |
+
+- **The weakest cell need not lie on a line.** Lying flat, the bracket's weakest cell is half full at
+  the inner corner of layer 1. It holds the edge of the outer wall's bead, whose middle runs through
+  the next cell. On the lines the lowest safety factor is 1.618 (2 % higher), on the outer wall at
+  the same corner. The lines show the cells that the middles of the beads run through. The lowest
+  number is the cells view's, and the CLI says when the two differ.
+- **About one piece per cell**, below the 1–2 the plan guessed: walls run along a row of cells, and
+  most cells hold one line. The 80 mm bracket (574k cells) would come to about 630k pieces, over the
+  tube budget, and is drawn as lines.
+
 Still to come: line-direction glyphs on the cells (M7 colours them by direction instead),
 cuts other than by layer, the part frame and the Compare tab (M9), and cancelling a running
 solve.
@@ -1314,7 +1368,7 @@ that comes early.
 | M6 | **Materials & TDS**: JSON DB, Bambu TDS import, filament → material mapping | PLA Basic + PETG HF generated from their PDFs with sources. **Done 2026-10-08:** both are generated from their sheets, every number with its page, and so is every other Bambu filament with a published sheet (45 materials); the solver takes the stiffness of the filament that was sliced; details in §9. |
 | M7 | **Print-aware material**: line directions, orthotropy, feature classes, bond factor from temps and time gaps | flat vs upright bar shows the TDS XY/Z ratio. **Done 2026-10-23:** every cell keeps its line direction, line type, time, nozzle and fan; the stiffness is orthotropic per cell; the bars' ratio is the sheet's once what the cells alone do is taken out (1.252 for PLA Basic, 1.175 PETG HF, 1.122 ABS), 1.325 as printed; the bond factor is computed and shown, for M8 to use; details in §6. |
 | M8 | **Failure & results**: criteria, SF, governing mode, weakest spot, deformed shape, probe. The refinement marking switches from von Mises to the real failure index. | bracket shows its weakest layer line and failure load. **Done 2026-10-23:** four modes in each cell's line frame (layers, beads, lines, crushing) with Tsai–Wu alongside, Z × the bond factor; the bracket on edge breaks at its layer line 10 mm up at 17.4 N (SF 0.87), flat at 31.7 N; the octree also refines where SF < 4 × the lowest and gets the SF within 1–4 % of the full solve; shown as SF bands, modes, an arrow, the outlined layer line and a probe; details in §8. |
-| M8b | **Results on the print lines**: each bead cut at its cells and coloured by their result, deformed with them, with the toolpath view's layer range, line types and thin lines; a click on a bead probes it (§12) | the bracket's safety factor and failure modes shown on its beads, its weakest wall line found with the sparse infill switched off |
+| M8b | **Results on the print lines**: each bead cut at its cells and coloured by their result, deformed with them, with the toolpath view's layer range, line types and thin lines; a click on a bead probes it (§12) | the bracket's safety factor and failure modes shown on its beads, its weakest wall line found with the sparse infill switched off. **Done 2026-10-24:** each bead cut at the cells its centre line runs through (about 1.1 pieces per cell), coloured, deformed and probed like the cells; on edge with the sparse infill off, the arrow finds the outer wall at layer 51 (SF 0.87, the weakest cell's); flat, the weakest line reads 2 % above the weakest cell, which no line's middle runs through; details in §12. |
 | M9 | **Orientation study**: manual compare + automatic sweep over the faces the part can lie on (convex hull, contact at least the area the user sets, as many as the user sets), shown in a 3D preview to tick off before it starts; coarse screening, refine the best 3, ranking | the bracket's candidate faces previewed, swept, and ranked in a table |
 | M10 | **Calibrate**: print and break coupons (flat/upright bar, 0°/45° raster, hook) to tune the bond and diagonal factors; CalculiX cross-check | predicted vs measured failure loads recorded in `docs/calibration.md` |
 

@@ -24,6 +24,9 @@ public enum ResultQuantity { SafetyFactor, FailureMode, VonMises, Displacement, 
 /// </summary>
 public enum CellColouring { Fill, Direction, Feature, Bond, Gap, Interfaces }
 
+/// <summary>What a result is drawn on: the bead cells, or the print's lines, each piece of a line in the colour of its cell.</summary>
+public enum ResultDrawing { Cells, Lines }
+
 /// <summary>What the viewport should show; a snapshot of the view settings taken when a redraw starts.</summary>
 /// <param name="LayerLow">First layer shown, and <paramref name="LayerHigh"/> the one after the last.</param>
 /// <param name="HiddenGroups">Bit per feature group of <see cref="ToolpathColours.Group"/> that is switched off.</param>
@@ -40,13 +43,18 @@ sealed record ViewState(
     int HiddenGroups,
     bool ThinLines,
     ResultQuantity Quantity,
+    ResultDrawing Drawing,
     int Pass,
     float ScaleTop,
     float Deformation,
     bool ShowElements,
     CellColouring CellColouring,
     IReadOnlyList<InterfaceMark> Marks,
-    int ProbedCell);
+    int ProbedCell)
+{
+    /// <summary>Whether lines of this feature are drawn: its group is not switched off.</summary>
+    public bool Shows(FeatureType feature) => (HiddenGroups >> ToolpathColours.Group(feature) & 1) == 0;
+}
 
 /// <summary>One sliced orientation of the part with everything derived from it. The next slice replaces it as a whole.</summary>
 sealed class PrintJob
@@ -55,6 +63,10 @@ sealed class PrintJob
 
     public required SliceResult Slice { get; init; }
     public required Toolpath Toolpath { get; init; }
+
+    /// <summary>When each line was printed, on the slicer's times: the clock the cells were filled by.</summary>
+    public required PrintClock Clock { get; init; }
+
     public required CellGrid Grid { get; init; }
 
     /// <summary>The cells holding enough plastic to count, whether or not a load case reaches them.</summary>
@@ -113,11 +125,20 @@ sealed class SolvedJob
     public IReadOnlySet<CellIndex> CellSet => cellSet ??= new HashSet<CellIndex>(Result.Mesh.Cells);
 
     HashSet<CellIndex>? cellSet;
+
+    // Built on first use by the scene builder, which runs one build at a time: the print's lines cut at
+    // the result's cells, and drawn as printed.
+    public BeadPieces? Pieces;
+    public ToolpathGeometry? Beads;
 }
+
+/// <summary>Pieces of the print's lines as drawn: at <paramref name="Ends"/> (two per piece), and of them only <paramref name="Shown"/>.</summary>
+sealed record DrawnLines(BeadPieces Pieces, Vector3[] Ends, int[] Shown);
 
 /// <summary>What one redraw produced; the parts that are not in the current view stay null.</summary>
 /// <param name="Marks">Lines that point something out: the weakest layer line.</param>
 /// <param name="Surface">The cell faces drawn, and <paramref name="SurfacePositions"/> where they were drawn, for a click to find its cell.</param>
+/// <param name="Lines">The pieces of line a result is drawn on, for a click to find its line and cell.</param>
 sealed record Scene(
     MeshGeometry3D? Model = null,
     MeshGeometry3D? Glyphs = null,
@@ -130,7 +151,8 @@ sealed record Scene(
     Legend? Legend = null,
     string Caption = "",
     CellSurface? Surface = null,
-    Vector3[]? SurfacePositions = null);
+    Vector3[]? SurfacePositions = null,
+    DrawnLines? Lines = null);
 
 /// <summary>Turns the current view settings into Helix geometry. Runs off the UI thread, one build at a time.</summary>
 static class SceneBuilder
@@ -141,6 +163,11 @@ static class SceneBuilder
     static readonly LegendEntry[] InterfaceEntries = [new(0, "Held: a mount", InterfaceGlyphs.Mount), new(1, "Loaded", InterfaceGlyphs.Load)];
 
     static readonly LegendEntry NothingBelow = new(0, "Nothing below: no layer line", Unreached);
+
+    /// <summary>Lines with no result, in the grey the toolpath view gives what is not part of the model.</summary>
+    static readonly Vector4 NotSolved = Palette.Neutral;
+
+    static readonly LegendEntry NotSolvedEntry = new(-1, "Not in the solve: not part of the model, or held by no mount", NotSolved);
 
     /// <param name="model">The part turned as the rotation fields say, for the model view.</param>
     /// <param name="rotation">Part frame → print frame as the rotation fields say; forces are given in the part frame.</param>
@@ -176,9 +203,9 @@ static class SceneBuilder
         if (!job.BeadColours.TryGetValue(state.Colouring, out var colours))
             job.BeadColours[state.Colouring] = colours = ToolpathColours.Colour(toolpath, state.Colouring);
 
-        var indices = beads.Indices(toolpath, state.LayerLow, state.LayerHigh, feature => (state.HiddenGroups >> ToolpathColours.Group(feature) & 1) == 0);
+        var indices = beads.Indices(toolpath, state.LayerLow, state.LayerHigh, state.Shows);
         var vertexColours = beads.VertexColours(colours.BySegment);
-        var shown = indices.Length / beads.IndicesPerBead;
+        var shown = indices.Length / beads.IndicesPerPiece;
         var caption = $"{shown:N0} of {beads.Segments.Length:N0} lines{(beads.Tubes || state.ThinLines ? "" : ", drawn thin: too many for full beads")}";
         return beads.Tubes
             ? new Scene(Beads: Mesh(beads.Positions, beads.Normals!, indices, vertexColours), Legend: colours.Legend, Caption: caption)
@@ -252,11 +279,10 @@ static class SceneBuilder
         var pass = result.Passes[Math.Clamp(state.Pass, 0, result.Passes.Count - 1)];
         var isFinal = ReferenceEquals(pass, result.Final);
         var levels = pass.CellLevels ?? result.Octree.CellLevels();
-        var surface = Surface(job, mesh.Cells, state);
+        var failure = solved.Failure;
 
         // Only the last pass kept its displacements, so earlier passes are drawn undeformed.
         var deformation = isFinal ? state.Deformation : 0;
-        var positions = deformation > 0 ? surface.Displaced(mesh, solved.NodeDisplacements, deformation) : surface.Positions;
         Func<int, int, int, Vector3>? move = deformation > 0
             ? (i, j, k) =>
             {
@@ -265,73 +291,82 @@ static class SceneBuilder
             }
             : null;
 
-        Legend legend;
-        Vector4[] colours;
-        var failure = solved.Failure;
-        switch (state.Quantity)
+        var (colour, legend) = CellColour(state, solved, pass, levels);
+        var caption = $"pass {pass.Index + 1} of {result.Passes.Count}: {pass.Leaves:N0} elements, {pass.Dofs:N0} unknowns" +
+                      (deformation > 0 ? $"; deformation x {deformation:0.#}" : "");
+        var range = Range(job, state);
+        var glyphs = new GlyphMesh();
+        Scene scene;
+        if (state.Drawing == ResultDrawing.Lines)
         {
-            case ResultQuantity.SafetyFactor when failure is not null:
-                var index = pass.FailureIndex ?? failure.Index;
-                colours = surface.VertexColours(e => FailureColours.SafetyColour(1.0 / index[e]));
-                legend = FailureColours.SafetyLegend();
-                break;
-            case ResultQuantity.FailureMode when failure is not null:
-                // How a cell would break matters near the weakest spot only: the same cells the refinement looks at.
-                var limit = failure.Index[failure.Weakest] / NearBreaking;
-                colours = surface.VertexColours(e => failure.Index[e] >= limit ? FailureColours.ModeColour(failure.Mode[e]) : FailureColours.FarFromBreaking);
-                legend = FailureColours.ModeLegend(Enumerable.Range(0, mesh.Cells.Length).Where(e => failure.Index[e] >= limit).Select(e => failure.Mode[e]), NearBreaking);
-                break;
-            case ResultQuantity.ElementSize:
-                var steps = Palette.Ordinal(result.RootLevel + 1);
-                colours = surface.VertexColours(e => steps[levels[e]]);
-                legend = new Legend("Element size", "", [.. steps.Select((colour, level) => new LegendEntry(level, ElementName(mesh.Grid, level), colour))]);
-                break;
-            case ResultQuantity.Displacement:
-                (colours, legend) = Scaled(surface, solved.Displacement, ColourScale.Sequential(0, state.ScaleTop * solved.MaxDisplacement), "Displacement", "mm");
-                break;
-            case ResultQuantity.InterlayerStress:
-                var extent = solved.InterlayerStress.Max(MathF.Abs);
-                (colours, legend) = Scaled(surface, solved.InterlayerStress, ColourScale.Diverging(state.ScaleTop * extent), "Stress across the layers (+ pulls them apart)", "MPa");
-                break;
-            default:
-                // The last pass's scale for every pass, so stepping through them shows the peak coming out.
-                (colours, legend) = Scaled(surface, pass.VonMises ?? result.VonMises, ColourScale.Sequential(0, state.ScaleTop * (float)result.Final.MaxVonMises), "von Mises stress", "MPa");
-                break;
+            var toolpath = job.Toolpath;
+            var pieces = solved.Pieces ??= BeadPieces.Cut(toolpath, job.Slice.Placement, mesh);
+            // Too many pieces for tubes come out as lines whatever was asked for, as in the toolpath view.
+            var thin = state.ThinLines || pieces.Count > ToolpathGeometry.MaxTubes;
+            var ends = deformation > 0 ? pieces.Displaced(mesh, solved.NodeDisplacements, deformation) : pieces.Ends;
+            ToolpathGeometry beads;
+            if (deformation > 0) beads = ToolpathGeometry.Build(toolpath, pieces, !thin, ends);
+            else if (solved.Beads is { } built && built.Tubes != thin) beads = built;
+            else solved.Beads = beads = ToolpathGeometry.Build(toolpath, pieces, !thin);
+
+            var shown = pieces.Shown(toolpath, state.LayerLow, state.LayerHigh, state.Shows);
+            var colours = beads.VertexColours(p => pieces.Cells[p] >= 0 ? colour(pieces.Cells[p]) : NotSolved);
+            if (shown.Any(p => pieces.Cells[p] < 0)) legend = legend with { Entries = [.. legend.Entries, NotSolvedEntry] };
+            var indices = beads.Indices(shown);
+            caption += $"; {shown.Length:N0} of {pieces.Count:N0} pieces of line, one per cell{(beads.Tubes || state.ThinLines ? "" : ", drawn thin: too many for full beads")}";
+
+            // The weakest of the lines shown: with some line types switched off, the weakest of the rest.
+            var weakest = pieces.Highest(Governing(solved, pass), shown);
+            if (weakest >= 0)
+            {
+                var segment = toolpath.Segments[pieces.Segments[weakest]];
+                var wayOut = ResultMarks.WayOut(solved.CellSet, mesh.Cells[pieces.Cells[weakest]]);
+                var surface = wayOut.Z != 0 ? segment.Height / 2 : segment.Width / 2;
+                ResultMarks.AddPointer(glyphs, BeadPieces.Middle(ends, weakest) + wayOut * surface, wayOut, 0.15f * solved.Diagonal, FailureColours.Marker);
+                caption += $"; weakest line shown: {segment.Feature.DisplayName().ToLowerInvariant()} in layer {segment.Layer + 1}, {GoverningText(solved, pass, pieces.Cells[weakest])}";
+            }
+            scene = (beads.Tubes
+                ? new Scene(Beads: Mesh(beads.Positions, beads.Normals!, indices, colours))
+                : new Scene(BeadLines: Lines(beads.Positions, indices, colours))) with { Lines = new DrawnLines(pieces, ends, shown) };
+        }
+        else
+        {
+            var surface = Surface(job, mesh.Cells, state);
+            var positions = deformation > 0 ? surface.Displaced(mesh, solved.NodeDisplacements, deformation) : surface.Positions;
+            // The weakest spot of the pass shown.
+            var weakest = mesh.Cells[pass.PeakCell];
+            if (range.Contains(weakest))
+            {
+                var wayOut = ResultMarks.WayOut(solved.CellSet, weakest);
+                var size = new Vector3(mesh.Grid.Pitch, mesh.Grid.Pitch, mesh.Grid.CellHeight(weakest.K));
+                ResultMarks.AddPointer(glyphs, ResultMarks.Centre(mesh.Grid, weakest) + wayOut * size / 2 + Moved(pass.PeakCell), wayOut, 0.15f * solved.Diagonal, FailureColours.Marker);
+            }
+            scene = new Scene(Cells: Mesh(positions, surface.Normals, surface.Indices, surface.VertexColours(colour)), Surface: surface, SurfacePositions: positions);
         }
 
-        var range = Range(job, state);
+        // The outlines lie on cell faces, which the beads do not fill: on the lines they would show between them as dots.
         LineGeometry3D? elements = null;
-        if (state.ShowElements)
+        if (state.ShowElements && state.Drawing == ResultDrawing.Cells)
         {
             var points = OctreeWireframe.Build(mesh, levels, range, move);
             if (points.Length > 0) elements = Lines(points);
         }
 
-        // The weakest spot of the pass shown, the weakest layer line, and the cell clicked last.
-        var glyphs = new GlyphMesh();
+        // The weakest layer line, and the cell clicked last.
         var marks = new List<Vector3>();
-        var weakest = mesh.Cells[pass.PeakCell];
-        if (range.Contains(weakest))
-        {
-            var wayOut = ResultMarks.WayOut(solved.CellSet, weakest);
-            var size = new Vector3(mesh.Grid.Pitch, mesh.Grid.Pitch, mesh.Grid.CellHeight(weakest.K));
-            ResultMarks.AddPointer(glyphs, ResultMarks.Centre(mesh.Grid, weakest) + wayOut * size / 2 + Moved(pass.PeakCell), wayOut, 0.15f * solved.Diagonal, FailureColours.Marker);
-        }
         if (isFinal && failure is not null && mesh.Cells[failure.WeakestLayerLine].K is var line && line >= range.KLow && line < range.KHigh)
             marks.AddRange(ResultMarks.LayerLine(mesh, solved.CellSet, line, move));
         if (state.ProbedCell >= 0 && state.ProbedCell < mesh.Cells.Length && range.Contains(mesh.Cells[state.ProbedCell]))
             marks.AddRange(CellBox(mesh, state.ProbedCell, move));
 
-        return new Scene(
-            Cells: Mesh(positions, surface.Normals, surface.Indices, colours),
-            Glyphs: glyphs.TriangleCount == 0 ? null : Mesh([.. glyphs.Positions], [.. glyphs.Normals], [.. Enumerable.Range(0, glyphs.Positions.Count)], [.. glyphs.Colours]),
-            Elements: elements,
-            Marks: marks.Count == 0 ? null : Lines([.. marks]),
-            Legend: legend,
-            Caption: $"pass {pass.Index + 1} of {result.Passes.Count}: {pass.Leaves:N0} elements, {pass.Dofs:N0} unknowns" +
-                     (deformation > 0 ? $"; deformation x {deformation:0.#}" : ""),
-            Surface: surface,
-            SurfacePositions: positions);
+        return scene with
+        {
+            Glyphs = glyphs.TriangleCount == 0 ? null : Mesh([.. glyphs.Positions], [.. glyphs.Normals], [.. Enumerable.Range(0, glyphs.Positions.Count)], [.. glyphs.Colours]),
+            Elements = elements,
+            Marks = marks.Count == 0 ? null : Lines([.. marks]),
+            Legend = legend,
+            Caption = caption,
+        };
 
         // How far the middle of a cell moves in the deformed shape: the mean of its corners.
         Vector3 Moved(int cell)
@@ -342,6 +377,43 @@ static class SceneBuilder
             return deformation * sum / HexElement.Nodes;
         }
     }
+
+    /// <summary>The colour of each cell of the result in the quantity shown, and the legend that explains it.</summary>
+    static (Func<int, Vector4> Colour, Legend Legend) CellColour(ViewState state, SolvedJob solved, AdaptivePass pass, byte[] levels)
+    {
+        var result = solved.Result;
+        var mesh = result.Mesh;
+        var failure = solved.Failure;
+        switch (state.Quantity)
+        {
+            case ResultQuantity.SafetyFactor when failure is not null:
+                var index = pass.FailureIndex ?? failure.Index;
+                return (e => FailureColours.SafetyColour(1.0 / index[e]), FailureColours.SafetyLegend());
+            case ResultQuantity.FailureMode when failure is not null:
+                // How a cell would break matters near the weakest spot only: the same cells the refinement looks at.
+                var limit = failure.Index[failure.Weakest] / NearBreaking;
+                return (e => failure.Index[e] >= limit ? FailureColours.ModeColour(failure.Mode[e]) : FailureColours.FarFromBreaking,
+                        FailureColours.ModeLegend(Enumerable.Range(0, mesh.Cells.Length).Where(e => failure.Index[e] >= limit).Select(e => failure.Mode[e]), NearBreaking));
+            case ResultQuantity.ElementSize:
+                var steps = Palette.Ordinal(result.RootLevel + 1);
+                return (e => steps[levels[e]], new Legend("Element size", "", [.. steps.Select((colour, level) => new LegendEntry(level, ElementName(mesh.Grid, level), colour))]));
+            case ResultQuantity.Displacement:
+                return Scaled(solved.Displacement, ColourScale.Sequential(0, state.ScaleTop * solved.MaxDisplacement), "Displacement", "mm");
+            case ResultQuantity.InterlayerStress:
+                var extent = solved.InterlayerStress.Max(MathF.Abs);
+                return Scaled(solved.InterlayerStress, ColourScale.Diverging(state.ScaleTop * extent), "Stress across the layers (+ pulls them apart)", "MPa");
+            default:
+                // The last pass's scale for every pass, so stepping through them shows the peak coming out.
+                return Scaled(pass.VonMises ?? result.VonMises, ColourScale.Sequential(0, state.ScaleTop * (float)result.Final.MaxVonMises), "von Mises stress", "MPa");
+        }
+    }
+
+    /// <summary>What the refinement of a pass went by, per cell: the failure index where there is a check, else the von Mises stress.</summary>
+    static float[] Governing(SolvedJob solved, AdaptivePass pass) =>
+        solved.Failure is { } failure ? pass.FailureIndex ?? failure.Index : pass.VonMises ?? solved.Result.VonMises;
+
+    static string GoverningText(SolvedJob solved, AdaptivePass pass, int cell) =>
+        solved.Failure is not null ? $"safety factor {1 / Governing(solved, pass)[cell]:0.00}" : $"von Mises {Governing(solved, pass)[cell]:0.00} MPa";
 
     /// <summary>A cell's twelve edges, as point pairs.</summary>
     static IEnumerable<Vector3> CellBox(FemMesh mesh, int cell, Func<int, int, int, Vector3>? move)
@@ -367,8 +439,8 @@ static class SceneBuilder
     /// <summary>The mode view shows how cells would break up to this factor × the lowest safety factor, as far as the refinement looks.</summary>
     const double NearBreaking = 2;
 
-    static (Vector4[] Colours, Legend Legend) Scaled(CellSurface surface, float[] values, ColourScale scale, string title, string unit) =>
-        (surface.VertexColours(e => scale.Colour(values[e])), new Legend(title, unit, [], scale));
+    static (Func<int, Vector4> Colour, Legend Legend) Scaled(float[] values, ColourScale scale, string title, string unit) =>
+        (e => scale.Colour(values[e]), new Legend(title, unit, [], scale));
 
     static string ElementName(CellGrid grid, int level)
     {

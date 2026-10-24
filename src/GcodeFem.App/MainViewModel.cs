@@ -240,6 +240,20 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     public partial ResultQuantity Quantity { get; set; }
 
+    public IReadOnlyList<Choice<ResultDrawing>> Drawings { get; } =
+    [
+        new(ResultDrawing.Cells, "The cells"),
+        new(ResultDrawing.Lines, "The print lines"),
+    ];
+
+    /// <summary>What the result is drawn on; on the print lines, line types can be switched off as in the toolpath view.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsResultOnLines), nameof(IsResultOnCells))]
+    public partial ResultDrawing Drawing { get; set; }
+
+    public bool IsResultOnLines => Drawing == ResultDrawing.Lines;
+    public bool IsResultOnCells => Drawing == ResultDrawing.Cells;
+
     /// <summary>The pass shown; the pass table's selected row.</summary>
     [ObservableProperty]
     public partial int Pass { get; set; }
@@ -285,6 +299,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     /// <summary>The cell faces of the results view as drawn, for a click to find its cell.</summary>
     (CellSurface Surface, Vector3[] Positions)? shownSurface;
+
+    /// <summary>The pieces of line of the results view as drawn, for a click to find its line and cell.</summary>
+    DrawnLines? shownLines;
 
     // ---- legend ----
 
@@ -404,6 +421,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     partial void OnColouringChanged(ToolpathColouring value) => Redraw();
     partial void OnThinLinesChanged(bool value) => Redraw();
     partial void OnQuantityChanged(ResultQuantity value) => Redraw();
+    partial void OnDrawingChanged(ResultDrawing value) => Redraw();
     partial void OnPassChanged(int value) => Redraw();
     partial void OnScaleTopChanged(double value) => Redraw();
     partial void OnDeformationChanged(double value) => Redraw();
@@ -525,10 +543,11 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 var toolpath = GcodeParser.Parse(slice.GcodePath);
                 // The slicer's own times per line type include acceleration, which the bond of the layer lines depends on.
                 steps.Step = "turning the toolpath into cells";
-                var grid = Voxelizer.Voxelize(toolpath, slice.Placement, slice.PrintMesh.Bounds, PrintClock.Calibrated(toolpath, slice.Report.FeatureSeconds));
+                var clock = PrintClock.Calibrated(toolpath, slice.Report.FeatureSeconds);
+                var grid = Voxelizer.Voxelize(toolpath, slice.Placement, slice.PrintMesh.Bounds, clock);
                 CellIndex[] cells = [.. grid.Occupied(PrintJob.MinFill)];
                 steps.Step = "how well the layer lines bonded";
-                return new PrintJob { Slice = slice, Toolpath = toolpath, Grid = grid, Cells = cells, Bonds = Bonds(grid, cells, toolpath, library) };
+                return new PrintJob { Slice = slice, Toolpath = toolpath, Clock = clock, Grid = grid, Cells = cells, Bonds = Bonds(grid, cells, toolpath, library) };
             });
 
             if (!ReferenceEquals(Part, part)) return; // another model was opened meanwhile
@@ -744,16 +763,41 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     /// <summary>
     /// The cell of the results view under a ray: what it is, how it was printed, its stress in the
-    /// frame of its lines and how near each mode is to breaking it.
+    /// frame of its lines and how near each mode is to breaking it. On the print lines, the line under
+    /// the ray comes first: which it is, when and how it was printed.
     /// </summary>
     void Probe(Vector3 origin, Vector3 direction)
     {
-        if (job?.Solved is not { } solved || shownSurface is not { } shown) return;
-        var face = shown.Surface.Pick(shown.Positions, origin, direction);
-        if (face < 0) return;
-        probedCell = shown.Surface.FaceCells[face];
-        ProbeText = ProbeDescription(solved, probedCell);
+        if (job is not { Solved: { } solved } current) return;
+        if (shownLines is { } lines)
+        {
+            var piece = lines.Pieces.Pick(current.Toolpath, lines.Ends, lines.Shown, origin, direction);
+            if (piece < 0) return;
+            probedCell = lines.Pieces.Cells[piece];
+            ProbeText = LineDescription(current, lines.Pieces, piece) + "\n" +
+                        (probedCell >= 0 ? ProbeDescription(solved, probedCell) : "It is not in the solve: it is not part of the model, no mount holds it, or its cell holds too little plastic.");
+        }
+        else if (shownSurface is { } shown)
+        {
+            var face = shown.Surface.Pick(shown.Positions, origin, direction);
+            if (face < 0) return;
+            probedCell = shown.Surface.FaceCells[face];
+            ProbeText = ProbeDescription(solved, probedCell);
+        }
+        else return;
         Redraw();
+    }
+
+    /// <summary>Which line a piece is part of: its line type and layer, and when, how hot and how cooled the nozzle laid it there.</summary>
+    static string LineDescription(PrintJob job, BeadPieces pieces, int piece)
+    {
+        var s = pieces.Segments[piece];
+        var segment = job.Toolpath.Segments[s];
+        // When the nozzle passed the middle of the piece, on the slicer's clock.
+        var start = job.Slice.Placement.BedToPrint(segment.Start) - new Vector3(0, 0, segment.Height / 2);
+        var along = segment.Length > 0 ? Vector3.Distance(start, BeadPieces.Middle(pieces.Ends, piece)) / segment.Length : 0;
+        var time = TimeSpan.FromSeconds(job.Clock.Start(s) + along * job.Clock.Duration(s));
+        return $"{segment.Feature.DisplayName()} in layer {segment.Layer + 1}, printed {(int)time.TotalHours}:{time:mm\\:ss} into the print at {segment.NozzleTemperature} °C, fan {segment.Fan / 2.55:0} %.";
     }
 
     static string ProbeDescription(SolvedJob solved, int e)
@@ -794,6 +838,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         LineTypes.Where(item => !item.IsShown).Aggregate(0, (mask, item) => mask | 1 << item.Key),
         ThinLines,
         Quantity,
+        Drawing,
         Pass,
         (float)(ScaleTop / 100),
         DeformationFactor,
@@ -841,6 +886,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         MarkLines = scene.Marks;
         BedGrid = scene.Bed;
         shownSurface = scene.Surface is { } surface && scene.SurfacePositions is { } positions ? (surface, positions) : null;
+        shownLines = scene.Lines;
         Caption = scene.Caption;
         OnPropertyChanged(nameof(DeformationText));
 

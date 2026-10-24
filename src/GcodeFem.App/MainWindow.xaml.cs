@@ -249,6 +249,7 @@ public partial class MainWindow : Window
         viewModel.View = view;
         if (options.Enum<ToolpathColouring>("colour") is { } colouring) viewModel.Colouring = colouring;
         if (options.Enum<ResultQuantity>("colour") is { } quantity) viewModel.Quantity = quantity;
+        if (options.Enum<ResultDrawing>("on") is { } drawing) viewModel.Drawing = drawing;
         if (options.Enum<CellColouring>("colour") is { } cells) viewModel.CellColouring = cells;
         if (options.Text("layers")?.Split('-') is [var low, var high])
         {

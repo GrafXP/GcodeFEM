@@ -22,6 +22,15 @@
             <Setter Property="Padding" Value="14,5" />
             <Setter Property="Margin" Value="0,0,4,0" />
         </Style>
+        <!-- A line type of the toolpath, with its colour; unticked, its lines are not drawn. -->
+        <DataTemplate x:Key="LineTypeToggle">
+            <CheckBox IsChecked="{Binding IsShown}" Margin="0,2">
+                <StackPanel Orientation="Horizontal">
+                    <Rectangle Width="12" Height="12" RadiusX="2" RadiusY="2" Fill="{Binding Swatch}" VerticalAlignment="Center" />
+                    <TextBlock Text="{Binding Label}" Margin="6,0,0,0" />
+                </StackPanel>
+            </CheckBox>
+        </DataTemplate>
     </Window.Resources>
 
     <DockPanel Background="{DynamicResource {x:Static SystemColors.WindowBrushKey}}">
@@ -203,18 +212,7 @@
                             <TextBlock Text="Colour by" VerticalAlignment="Center" Width="62" />
                             <ComboBox ItemsSource="{Binding Colourings}" DisplayMemberPath="Label" SelectedValuePath="Value" SelectedValue="{Binding Colouring}" />
                         </DockPanel>
-                        <ItemsControl ItemsSource="{Binding LineTypes}" Margin="0,6,0,0">
-                            <ItemsControl.ItemTemplate>
-                                <DataTemplate>
-                                    <CheckBox IsChecked="{Binding IsShown}" Margin="0,2">
-                                        <StackPanel Orientation="Horizontal">
-                                            <Rectangle Width="12" Height="12" RadiusX="2" RadiusY="2" Fill="{Binding Swatch}" VerticalAlignment="Center" />
-                                            <TextBlock Text="{Binding Label}" Margin="6,0,0,0" />
-                                        </StackPanel>
-                                    </CheckBox>
-                                </DataTemplate>
-                            </ItemsControl.ItemTemplate>
-                        </ItemsControl>
+                        <ItemsControl ItemsSource="{Binding LineTypes}" ItemTemplate="{StaticResource LineTypeToggle}" Margin="0,6,0,0" />
                         <CheckBox Content="Thin lines instead of full beads" IsChecked="{Binding ThinLines}" Margin="0,8,0,2"
                                   ToolTip="Much less to draw: for big parts on a weak graphics card" />
                     </StackPanel>
@@ -233,14 +231,26 @@
                             <TextBlock Text="Colour by" VerticalAlignment="Center" Width="62" />
                             <ComboBox ItemsSource="{Binding Quantities}" DisplayMemberPath="Label" SelectedValuePath="Value" SelectedValue="{Binding Quantity}" />
                         </DockPanel>
+                        <DockPanel Style="{StaticResource Field}"
+                                   ToolTip="On the print lines, each piece of a line takes the result of the cell it runs through: which wall line breaks first, which infill lines carry the load">
+                            <TextBlock Text="Draw on" VerticalAlignment="Center" Width="62" />
+                            <ComboBox ItemsSource="{Binding Drawings}" DisplayMemberPath="Label" SelectedValuePath="Value" SelectedValue="{Binding Drawing}" />
+                        </DockPanel>
+                        <StackPanel Visibility="{Binding IsResultOnLines, Converter={StaticResource Visible}}">
+                            <ItemsControl ItemsSource="{Binding LineTypes}" ItemTemplate="{StaticResource LineTypeToggle}" Margin="0,4,0,0"
+                                          ToolTip="Untick a line type to see the lines behind it: with the sparse infill off, the walls" />
+                            <CheckBox Content="Thin lines instead of full beads" IsChecked="{Binding ThinLines}" Margin="0,6,0,2"
+                                      ToolTip="Much less to draw: for big parts on a weak graphics card" />
+                        </StackPanel>
                         <TextBlock Text="{Binding ScaleTopText}" Margin="0,8,0,2" />
                         <Slider Minimum="5" Maximum="100" Value="{Binding ScaleTop}" SmallChange="1" LargeChange="10" />
                         <TextBlock Text="{Binding DeformationText}" Margin="0,8,0,2" />
                         <Slider Minimum="0" Maximum="1" Value="{Binding Deformation}" SmallChange="0.05" LargeChange="0.2" />
                         <CheckBox Content="Outline the coarse elements" IsChecked="{Binding ShowElements}" Margin="0,8,0,2"
+                                  Visibility="{Binding IsResultOnCells, Converter={StaticResource Visible}}"
                                   ToolTip="Elements of 4 x 4 x 4 cells and larger. Where there are no outlines, the mesh is fine." />
                         <TextBlock Style="{StaticResource Hint}" Margin="0,8,0,0"
-                                   Text="The white arrow points at the weakest spot, the white outline is the weakest layer line. Click a cell to see its numbers." />
+                                   Text="The white arrow points at the weakest spot (on the print lines, at the weakest line shown), the white outline is the weakest layer line. Click a cell or a line to see its numbers." />
                     </StackPanel>
                 </GroupBox>
             </StackPanel>

@@ -53,6 +53,53 @@ public static class Voxelizer
         return grid;
     }
 
+    /// <summary>
+    /// The cells of a bead's centre line, in order from <paramref name="start"/> to <paramref name="end"/>
+    /// (print frame), each with where along the line it enters and leaves it, 0 to 1: the line cut where
+    /// it crosses from one cell into the next. A point on a cell boundary belongs to the cell on its +X
+    /// or +Y side, as the samples of <see cref="Voxelize"/> do. These are the cells that take the middle
+    /// of the bead; its edges spill into their neighbours. Cells outside the grid are walked like any other.
+    /// </summary>
+    public static void Walk(CellGrid grid, Vector3 start, Vector3 end, List<(int I, int J, float From, float To)> pieces)
+    {
+        var first = pieces.Count;
+        var inverse = 1 / grid.Pitch;
+        var a = (new Vector2(start.X, start.Y) - grid.Origin) * inverse;
+        var b = (new Vector2(end.X, end.Y) - grid.Origin) * inverse;
+        var d = b - a;
+        int i = (int)MathF.Floor(a.X), j = (int)MathF.Floor(a.Y);
+        int lastI = (int)MathF.Floor(b.X), lastJ = (int)MathF.Floor(b.Y);
+        int stepI = Math.Sign(lastI - i), stepJ = Math.Sign(lastJ - j);
+        // Where along the line it next crosses a boundary in X and in Y, and how far apart those crossings are.
+        var nextX = stepI == 0 ? float.PositiveInfinity : (i + (stepI > 0 ? 1 : 0) - a.X) / d.X;
+        var nextY = stepJ == 0 ? float.PositiveInfinity : (j + (stepJ > 0 ? 1 : 0) - a.Y) / d.Y;
+        var spanX = stepI == 0 ? 0 : MathF.Abs(1 / d.X);
+        var spanY = stepJ == 0 ? 0 : MathF.Abs(1 / d.Y);
+
+        // One crossing per cell boundary between the first cell and the last; rounding cannot add more.
+        // A stretch shorter than a sliver, as rounding leaves where a line starts, ends or crosses a corner
+        // on a boundary, goes to the cell after it; at the end of the line, to the one before.
+        var sliver = MinPiece / Math.Max(d.Length(), MinPiece);
+        var from = 0f;
+        for (var crossings = Math.Abs(lastI - i) + Math.Abs(lastJ - j); crossings > 0; crossings--)
+        {
+            var alongX = j == lastJ || (i != lastI && nextX <= nextY);
+            var to = Math.Clamp(alongX ? nextX : nextY, from, 1);
+            if (to - from > sliver)
+            {
+                pieces.Add((i, j, from, to));
+                from = to;
+            }
+            if (alongX) (i, nextX) = (i + stepI, nextX + spanX);
+            else (j, nextY) = (j + stepJ, nextY + spanY);
+        }
+        if (1 - from > sliver || pieces.Count == first) pieces.Add((i, j, from, 1));
+        else pieces[^1] = pieces[^1] with { To = 1 };
+    }
+
+    /// <summary>The shortest piece <see cref="Walk"/> cuts, as a share of a cell.</summary>
+    const float MinPiece = 1e-3f;
+
     static void Deposit(CellGrid grid, in ExtrusionSegment segment, Vector3 start, Vector3 end, double startTime, double duration)
     {
         var along = new Vector2(end.X - start.X, end.Y - start.Y);

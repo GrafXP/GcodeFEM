@@ -5,97 +5,100 @@ using GcodeFem.Core.Slicing;
 namespace GcodeFem.Core.Visual;
 
 /// <summary>
-/// A toolpath's beads as drawable geometry in the print frame. Each bead is a tube with a diamond
-/// cross-section of its own width and height, shaded round, so neighbouring lines stay apart to
-/// the eye. Its ends come to a point half a width beyond the nozzle's path, as far as the plastic
-/// reaches, which also closes the corners between one line and the next. A toolpath too big for
-/// that is drawn as plain lines. Beads keep the order of the G-code.
+/// A toolpath's beads as drawable geometry in the print frame, whole or in the pieces of
+/// <see cref="BeadPieces"/>. Each piece is a tube with a diamond cross-section of its bead's width and
+/// height, shaded round, so neighbouring lines stay apart to the eye. Where a bead ends, its tube comes
+/// to a point half a width beyond the nozzle's path, as far as the plastic reaches, which also closes
+/// the corners between one line and the next; where it is only cut, the tube ends flat against the
+/// next piece. A toolpath too big for that is drawn as plain lines. Pieces keep the order of the G-code.
 /// </summary>
 public sealed class ToolpathGeometry
 {
-    /// <summary>A ring of four at each end of the nozzle's path, then the two tips.</summary>
+    /// <summary>A ring of four at each end of the piece, then the two tips.</summary>
     const int TubeVertices = 10, TubeIndices = 48;
 
-    /// <summary>Above this many beads, tubes cost too much memory (10 vertices each) and lines are drawn instead.</summary>
+    /// <summary>Above this many pieces, tubes cost too much memory (10 vertices each) and lines are drawn instead.</summary>
     public const int MaxTubes = 400_000;
 
+    public required BeadPieces Pieces { get; init; }
     public required bool Tubes { get; init; }
     public required Vector3[] Positions { get; init; }
 
     /// <summary>Per vertex, for tubes; lines have none.</summary>
     public required Vector3[]? Normals { get; init; }
 
-    /// <summary>Per bead drawn: its index in <see cref="Toolpath.Segments"/>, ascending.</summary>
-    public required int[] Segments { get; init; }
+    /// <summary>Per piece: its bead's index in <see cref="Toolpath.Segments"/>, ascending.</summary>
+    public int[] Segments => Pieces.Segments;
 
-    public int VerticesPerBead => Tubes ? TubeVertices : 2;
-    public int IndicesPerBead => Tubes ? TubeIndices : 2;
+    public int VerticesPerPiece => Tubes ? TubeVertices : 2;
+    public int IndicesPerPiece => Tubes ? TubeIndices : 2;
 
+    /// <summary>Every bead whole.</summary>
     /// <param name="tubes">Null chooses tubes unless there are more than <see cref="MaxTubes"/> beads.</param>
-    public static ToolpathGeometry Build(Toolpath toolpath, Placement placement, bool? tubes = null)
-    {
-        var segments = new List<int>(toolpath.Segments.Length);
-        for (var s = 0; s < toolpath.Segments.Length; s++)
-            if (toolpath.Segments[s].Length > 0) segments.Add(s);
-        var asTubes = tubes ?? segments.Count <= MaxTubes;
+    public static ToolpathGeometry Build(Toolpath toolpath, Placement placement, bool? tubes = null) =>
+        Build(toolpath, BeadPieces.Whole(toolpath, placement), tubes);
 
-        var perBead = asTubes ? TubeVertices : 2;
-        var positions = new Vector3[perBead * segments.Count];
+    /// <param name="tubes">Null chooses tubes unless there are more than <see cref="MaxTubes"/> pieces.</param>
+    /// <param name="ends">Where the pieces are drawn, two per piece: <see cref="BeadPieces.Ends"/> by default, or the deformed shape. Each keeps the cross-section of its bead as printed.</param>
+    public static ToolpathGeometry Build(Toolpath toolpath, BeadPieces pieces, bool? tubes = null, Vector3[]? ends = null)
+    {
+        var asTubes = tubes ?? pieces.Count <= MaxTubes;
+        ends ??= pieces.Ends;
+
+        var perPiece = asTubes ? TubeVertices : 2;
+        var positions = new Vector3[perPiece * pieces.Count];
         var normals = asTubes ? new Vector3[positions.Length] : null;
-        Parallel.For(0, segments.Count, b =>
+        Parallel.For(0, pieces.Count, p =>
         {
-            var segment = toolpath.Segments[segments[b]];
-            // The G-code's Z is the nozzle, at the top of the bead.
-            var down = new Vector3(0, 0, segment.Height / 2);
-            var start = placement.BedToPrint(segment.Start) - down;
-            var end = placement.BedToPrint(segment.End) - down;
+            var (start, end) = (ends[2 * p], ends[2 * p + 1]);
             if (normals is null)
             {
-                (positions[2 * b], positions[2 * b + 1]) = (start, end);
+                (positions[2 * p], positions[2 * p + 1]) = (start, end);
                 return;
             }
 
-            var along = Vector3.Normalize(end - start);
+            // The bead's own direction as printed, so that the pieces of one bead line up even where they are moved.
+            var segment = toolpath.Segments[pieces.Segments[p]];
+            var along = Vector3.Normalize(segment.End - segment.Start);
             var side = Vector3.Cross(along, Vector3.UnitZ);
             side = side.LengthSquared() > 1e-6f ? Vector3.Normalize(side) : Vector3.UnitX;
             var up = Vector3.Cross(side, along);
             Span<Vector3> ring = [up, side, -up, -side];
-            var first = TubeVertices * b;
+            var first = TubeVertices * p;
             for (var m = 0; m < 4; m++)
             {
                 var offset = ring[m] * ((m & 1) == 0 ? segment.Height : segment.Width) / 2;
                 (positions[first + m], positions[first + 4 + m]) = (start + offset, end + offset);
                 (normals[first + m], normals[first + 4 + m]) = (ring[m], ring[m]);
             }
+            // A cut end's tip lies in its ring, which closes the tube flat.
             var tip = along * segment.Width / 2;
-            (positions[first + 8], positions[first + 9]) = (start - tip, end + tip);
+            var tips = pieces.Tips[p];
+            (positions[first + 8], positions[first + 9]) = (start - ((tips & BeadPieces.StartTip) != 0 ? tip : Vector3.Zero), end + ((tips & BeadPieces.EndTip) != 0 ? tip : Vector3.Zero));
             (normals[first + 8], normals[first + 9]) = (-along, along);
         });
-        return new ToolpathGeometry { Tubes = asTubes, Positions = positions, Normals = normals, Segments = [.. segments] };
+        return new ToolpathGeometry { Pieces = pieces, Tubes = asTubes, Positions = positions, Normals = normals };
     }
 
     /// <summary>
-    /// The index buffer for the beads of layers <paramref name="layerLow"/> up to but not including
+    /// The index buffer for the pieces of layers <paramref name="layerLow"/> up to but not including
     /// <paramref name="layerHigh"/> whose feature <paramref name="shows"/> accepts: triangles for tubes, point pairs for lines.
     /// </summary>
-    public int[] Indices(Toolpath toolpath, int layerLow, int layerHigh, Func<FeatureType, bool> shows)
-    {
-        var visible = new List<int>();
-        for (var b = 0; b < Segments.Length; b++)
-        {
-            var segment = toolpath.Segments[Segments[b]];
-            if (segment.Layer >= layerLow && segment.Layer < layerHigh && shows(segment.Feature)) visible.Add(b);
-        }
+    public int[] Indices(Toolpath toolpath, int layerLow, int layerHigh, Func<FeatureType, bool> shows) =>
+        Indices(Pieces.Shown(toolpath, layerLow, layerHigh, shows));
 
+    /// <summary>The index buffer for the pieces <paramref name="visible"/>, as <see cref="BeadPieces.Shown"/> lists them.</summary>
+    public int[] Indices(int[] visible)
+    {
         if (!Tubes)
         {
-            var pairs = new int[2 * visible.Count];
-            for (var n = 0; n < visible.Count; n++) (pairs[2 * n], pairs[2 * n + 1]) = (2 * visible[n], 2 * visible[n] + 1);
+            var pairs = new int[2 * visible.Length];
+            for (var n = 0; n < visible.Length; n++) (pairs[2 * n], pairs[2 * n + 1]) = (2 * visible[n], 2 * visible[n] + 1);
             return pairs;
         }
 
-        var indices = new int[TubeIndices * visible.Count];
-        Parallel.For(0, visible.Count, n =>
+        var indices = new int[TubeIndices * visible.Length];
+        Parallel.For(0, visible.Length, n =>
         {
             int first = TubeVertices * visible[n], at = TubeIndices * n;
             for (var m = 0; m < 4; m++)
@@ -114,11 +117,14 @@ public sealed class ToolpathGeometry
     }
 
     /// <summary>Per-vertex colours from one colour per toolpath segment.</summary>
-    public Vector4[] VertexColours(Vector4[] segmentColours)
+    public Vector4[] VertexColours(Vector4[] segmentColours) => VertexColours(p => segmentColours[Segments[p]]);
+
+    /// <summary>Per-vertex colours from one colour per piece.</summary>
+    public Vector4[] VertexColours(Func<int, Vector4> pieceColour)
     {
-        var perBead = VerticesPerBead;
+        var perPiece = VerticesPerPiece;
         var colours = new Vector4[Positions.Length];
-        Parallel.For(0, Segments.Length, b => colours.AsSpan(perBead * b, perBead).Fill(segmentColours[Segments[b]]));
+        Parallel.For(0, Pieces.Count, p => colours.AsSpan(perPiece * p, perPiece).Fill(pieceColour(p)));
         return colours;
     }
 }

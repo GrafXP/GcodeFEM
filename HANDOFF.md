@@ -788,11 +788,78 @@ Read [PLAN.md](PLAN.md) for the design. This file only tracks where things stand
 - Tsai–Wu is reported, not used.
 - `materials/tds/` is still untracked (Bambu's PDFs; Martin to decide).
 
+## 2026-10-24 — session 8, on the desktop
+
+- M8 and the progress bar are committed as `2b6fd12` and pushed on **`m3-octree`**, again without
+  `materials/tds/` (Martin asked to "commit all"; the PDFs stay out until he decides about them).
+- Before any change: 316 tests green.
+- **M8b is not committed yet.**
+
+### M8b results on the print lines: done
+- `Core/Fem/Voxelizer.Walk`: the cells of a bead's centre line, cut exactly at the cell boundaries
+  of the voxelizer's grid (a step per boundary crossed, with the voxelizer's rule for a point on a
+  boundary). Stretches under a thousandth of a cell, left by rounding, go to the next cell.
+- `Core/Visual/BeadPieces`: `Whole` (one piece per bead, for the toolpath view) and `Cut` (one per
+  cell of the mesh, the rest whole). A stretch outside the solve under half a pitch joins its
+  neighbour (a slanted line clipping a cell the voxelizer's samples missed). Also `Displaced`
+  (trilinear in the cell), `Shown` (layer range and line types), `Pick` (ray against the bead's
+  cross-section, an ellipse) and `Highest` (the weakest piece shown).
+- `ToolpathGeometry` builds from pieces: flat where a bead is only cut, pointed where it ends;
+  `ends` for the deformed shape keeps the bead's frame. `VerticesPerBead` / `IndicesPerBead` are now
+  `…PerPiece`; `Indices(int[] shown)`; `VertexColours(Func<int, Vector4>)`.
+- App:
+  - `ResultDrawing` and **Draw on** in the Result group: the cells or the print lines (`--on lines`).
+    On the lines the line-type switches and thin lines show there too.
+  - The results scene computes one colour per cell (`CellColour`) for both drawings. Lines with no
+    cell are grey, with a legend entry.
+  - The arrow goes to the weakest line shown and the status bar names it. The layer line is
+    outlined; the coarse elements are not (they showed between the beads as dots).
+  - A click on a bead probes it: the line (type, layer, time on the slicer's clock, nozzle, fan), then
+    its cell. `PrintJob.Clock` keeps the calibrated clock for that. `SolvedJob` caches the pieces and
+    their undeformed geometry.
+- CLI: `adapt` and `solve` print "on the lines": the pieces, and the weakest piece of each line type,
+  with a note when no line runs through the middle of the weakest cell. `FemCommands.Problem` now
+  carries the toolpath and its placement.
+- Tests: 336 green (about 60 s); 20 are new. They cover the walk (cut points both ways, neighbouring
+  cells without gaps, corners and boundaries, against the voxelizer's cells), the pieces (cells, tips,
+  lines outside the solve, slanted lines, linear displacement, flat and pointed ends, colours, what is
+  shown, picking, the highest), and the milestone's bracket through Bambu Studio. That test and M8's
+  share one solve of each orientation (`Brackets`).
+- Checked:
+
+  | Check | How |
+  | --- | --- |
+  | Flat: 105,727 pieces, 1.11 per cell, cut in 0.03 s; weakest line outer wall layer 40, SF 1.618; the weakest cell (1.583) has no line through its middle | `gcodefem adapt --study samples\bracket40_holes.study.json` |
+  | On edge: 97,661 pieces, 1.03 per cell; weakest line outer wall layer 51, SF 0.870, the weakest cell's | the same with `--rot 90,0,0` |
+  | Safety factor on the lines, whole part and from above cut at layer 20 | `GcodeFem.App --study samples\bracket40_holes.study.json --view results --colour safetyfactor --on lines [--layers 1-20 --look -0.2,0.3,-1 --zoom 2.6 --no-elements] --screenshot out.png` |
+  | On edge, sparse infill off: the arrow on the outer wall at layer 51; the deformed leg, lines joined; the Result group's new controls | `… --rot 90,0,0 --on lines --hide "sparse infill" --deform 1 --size 1400x1350 …` |
+  | What breaks first, and a probe on a wall bead (outer wall, layer 11, 0:04:18, 220 °C, fan 100 %) | `… --colour failuremode --on lines --layers 1-20 … --probe "648,296"` |
+  | Thin lines; the cells drawing and the toolpath view as before | `… --colour vonmises --on lines --thin`, `… --colour safetyfactor --probe …`, `… --view toolpaths …` |
+
+- Not checked by hand: clicking a bead with the mouse (the scripted `--probe` goes through the same
+  `PickAt`), and switching between the drawings in the window.
+
+### What M8b found
+- **The weakest cell need not lie on a line.** Lying flat, the bracket's weakest cell (SF 1.583,
+  layer 1, half full) holds the edge of the outer wall's bead, whose middle runs through the next
+  cell. On the lines the lowest is 1.618 at the same corner. The cells view keeps the lowest number;
+  the CLI says when the two differ (PLAN.md §12).
+- **About one piece per cell** (1.03–1.11), not the 1–2 guessed. The bracket draws as tubes in
+  150–180 ms; the 80 mm bracket would be about 630k pieces, over the tube budget, so lines.
+- **The walk and the voxelizer differ at the corners of cells.** The voxelizer samples 4 points per
+  pitch along a bead and 4 across. A slanted line can clip the corner of a cell that none of them
+  land in, so that cell may hold none of that bead's plastic. On its own such a stretch showed as a
+  grey sliver; it now joins the piece next to it.
+- **Element outlines and beads do not mix**: the outlines lie on cell faces, and between the round
+  beads they show as rows of dots.
+
+### Open items from M8b
+- The deformed lines are built again on each redraw (positions only change): 150 ms on the
+  bracket, more on big parts.
+- The probe tests every piece shown, one by one: fine at 100k pieces, slow at millions.
+- Switching a line type off is a view only; the solve and its numbers include those lines.
+
 ## Next
-- M8b, results on the print lines (Martin, 2026-10-23; PLAN.md §12). The results view draws
-  the beads, cut where they pass from cell to cell (the voxelizer's walk) and coloured by their
-  cell's result. A click on a bead probes it. Before M9, so that the sweep's results can be
-  read on the lines too.
 - M9 orientation study: compare orientations by the safety factor M8 gives (and deflection,
   print time, filament), manual and as a sweep that screens on the coarse pass and refines
   the best 3 (PLAN.md §11). The coarse pass reads the safety factor high (pass 1 of the

@@ -108,7 +108,7 @@ public class ToolpathGeometryTests
         Assert.Equal(Palette.Categorical[2], colours[1]);
         Assert.Equal(colours[0], colours[2]);
         Assert.Equal(Palette.Neutral, colours[3]);
-        for (var v = 0; v < vertices.Length; v++) Assert.Equal(colours[v / geometry.VerticesPerBead], vertices[v]);
+        for (var v = 0; v < vertices.Length; v++) Assert.Equal(colours[v / geometry.VerticesPerPiece], vertices[v]);
     }
 
     [Fact]

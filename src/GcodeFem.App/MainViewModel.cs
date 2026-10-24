@@ -41,7 +41,7 @@ public sealed partial class LegendItem(int key, string label, Vector4 colour) : 
 public sealed record LegendTick(string Text, double Top);
 
 /// <summary>A row of the pass table.</summary>
-public sealed record PassRow(int Pass, string Elements, string Unknowns, int Iterations, string MaxVonMises, string PeakIn, string Seconds);
+public sealed record PassRow(int Pass, string Elements, string Unknowns, int Iterations, string SafetyFactor, string MaxVonMises, string PeakIn, string Seconds);
 
 static class Swatches
 {
@@ -79,6 +79,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         };
         Level = Levels[0];
         ResetStudy();
+        workTimer.Tick += (_, _) => ShowWork();
     }
 
     public DefaultEffectsManager EffectsManager { get; } = new();
@@ -228,6 +229,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     public IReadOnlyList<Choice<ResultQuantity>> Quantities { get; } =
     [
+        new(ResultQuantity.SafetyFactor, "Safety factor"),
+        new(ResultQuantity.FailureMode, "What breaks first"),
         new(ResultQuantity.VonMises, "von Mises stress"),
         new(ResultQuantity.Displacement, "Displacement"),
         new(ResultQuantity.InterlayerStress, "Stress across the layers"),
@@ -270,6 +273,19 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     public bool HasResultWarning => ResultWarning.Length > 0;
 
+    /// <summary>What there is to know about the cell clicked last in the results view.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasProbe))]
+    public partial string ProbeText { get; set; } = "";
+
+    public bool HasProbe => ProbeText.Length > 0;
+
+    /// <summary>The cell of the result clicked last, −1 for none.</summary>
+    int probedCell = -1;
+
+    /// <summary>The cell faces of the results view as drawn, for a click to find its cell.</summary>
+    (CellSurface Surface, Vector3[] Positions)? shownSurface;
+
     // ---- legend ----
 
     [ObservableProperty]
@@ -307,6 +323,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     [ObservableProperty]
     public partial LineGeometry3D? ElementLines { get; set; }
+
+    /// <summary>The weakest layer line and the cell clicked last, outlined.</summary>
+    [ObservableProperty]
+    public partial LineGeometry3D? MarkLines { get; set; }
 
     [ObservableProperty]
     public partial LineGeometry3D? BedGrid { get; set; }
@@ -471,7 +491,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         HasPrint = HasResult = false;
         Passes.Clear();
         LineTypes.Clear();
-        ResultSummary = ResultWarning = "";
+        ResultSummary = ResultWarning = ProbeText = "";
+        probedCell = -1;
         ResetStudy(); // interfaces are faces of the model that was open
         View = ViewMode.Model;
 
@@ -489,7 +510,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     {
         if (Part is not { } part || bambu is null || presets is null || Process is null || Filament is null) return;
         IsBusy = true;
-        Status = "Slicing with Bambu Studio…";
+        // Bambu Studio says nothing while it slices, so the bar can only show the time it takes.
+        var steps = new StepClock("Bambu Studio at work");
+        BeginWork("Slicing", steps.Now);
         try
         {
             var slicer = new BambuSlicer(bambu, presets, BambuSlicer.DefaultCacheDirectory);
@@ -498,10 +521,13 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             var sliced = await Task.Run(async () =>
             {
                 var slice = await slicer.SliceAsync(request);
+                steps.Step = "reading the toolpath";
                 var toolpath = GcodeParser.Parse(slice.GcodePath);
                 // The slicer's own times per line type include acceleration, which the bond of the layer lines depends on.
+                steps.Step = "turning the toolpath into cells";
                 var grid = Voxelizer.Voxelize(toolpath, slice.Placement, slice.PrintMesh.Bounds, PrintClock.Calibrated(toolpath, slice.Report.FeatureSeconds));
                 CellIndex[] cells = [.. grid.Occupied(PrintJob.MinFill)];
+                steps.Step = "how well the layer lines bonded";
                 return new PrintJob { Slice = slice, Toolpath = toolpath, Grid = grid, Cells = cells, Bonds = Bonds(grid, cells, toolpath, library) };
             });
 
@@ -510,7 +536,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             job = sliced;
             HasResult = false;
             Passes.Clear();
-            ResultSummary = ResultWarning = "";
+            ResultSummary = ResultWarning = ProbeText = "";
+            probedCell = -1;
             LineTypes.Clear();
             foreach (var entry in ToolpathColours.Colour(sliced.Toolpath, ToolpathColouring.Feature).Legend.Entries)
             {
@@ -538,6 +565,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
         finally
         {
+            EndWork();
             IsBusy = false;
         }
     }
@@ -549,6 +577,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     {
         if (job is not { } current || SelectedLoadCase is not { } shown) return;
         IsBusy = true;
+        var estimate = new SolveEstimate();
+        BeginWork("Solving", estimate.Now);
         try
         {
             if (Interfaces.FirstOrDefault(item => item.HasValueError) is { } unread)
@@ -558,14 +588,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             // The material of the filament the part was sliced with, which need not be the one selected now.
             var match = materials.Match(current.Toolpath);
             var material = match.Material.Stiffness();
+            var strength = match.Material.Strength(out var noStrength);
             var options = new AdaptiveOptions(RootLevel: Level.Value, MinFill: PrintJob.MinFill, KeepPassFields: true);
             Passes.Clear();
-            Status = "Solving: building the mesh…";
-            var progress = new Progress<AdaptivePass>(pass =>
-            {
-                Passes.Add(Row(pass));
-                Status = $"Solving: pass {pass.Index + 1} done ({pass.Dofs:N0} unknowns, {pass.Marked:N0} elements to refine)…";
-            });
+            var progress = new Progress<AdaptivePass>(pass => Passes.Add(Row(pass)));
 
             var solved = await Task.Run(() =>
             {
@@ -573,15 +599,24 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 var loadCase = InterfaceMapper.Map(current.Slice.PrintMesh, current.Slice.Placement.Rotation, current.Grid.Pitch, study.Interfaces, chosen);
                 var mesh = FemMesh.Build(current.Grid, PrintJob.MinFill, loadCase);
                 var reach = Assembler.Reach(mesh, loadCase);
-                var result = AdaptiveAnalysis.Run(mesh, material, loadCase, LinearSolvers.Best(), options, ((IProgress<AdaptivePass>)progress).Report);
+                // The layer lines are as strong as they have bonded: the refinement goes where the part is nearest to breaking.
                 var bonds = new BondModel().Cells(mesh.Grid, mesh.Cells, match.Material.Bonding(current.Toolpath), PrintJob.MinFill);
-                return new SolvedJob(result, chosen.Name, reach, match, bonds);
+                var cells = strength is null ? null : new CellStrength(mesh, strength, bonds.Factor);
+                // The estimate is fed here, on the solving thread, for its clock to read the passes as they end.
+                var result = AdaptiveAnalysis.Run(mesh, material, loadCase, LinearSolvers.Best(), options, pass =>
+                {
+                    estimate.Passed(pass);
+                    ((IProgress<AdaptivePass>)progress).Report(pass);
+                }, cells, estimate.Solving);
+                estimate.Finished();
+                return new SolvedJob(result, chosen.Name, reach, match, bonds, cells, noStrength);
             });
 
             if (!ReferenceEquals(job, current)) return; // sliced again or another model opened meanwhile
 
             current.Solved = solved;
             current.Surface = null;
+            (probedCell, ProbeText) = (-1, "");
             Passes.Clear();
             foreach (var pass in solved.Result.Passes) Passes.Add(Row(pass));
             Describe(solved);
@@ -598,6 +633,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
         finally
         {
+            EndWork();
             IsBusy = false;
         }
     }
@@ -607,6 +643,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         string.Join(" / ", pass.LeavesByLevel.Select(n => n.ToString("N0"))),
         pass.Dofs.ToString("N0"),
         pass.Solve.Iterations,
+        double.IsNaN(pass.SafetyFactor) ? "" : pass.SafetyFactor.ToString("0.00"),
         pass.MaxVonMises.ToString("0.00"),
         pass.PeakLevel == 0 ? "bead cell" : $"{1 << pass.PeakLevel}³ cells",
         pass.Time.TotalSeconds.ToString("0.00"));
@@ -616,15 +653,16 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         var result = solved.Result;
         var final = result.Final;
         var mesh = result.Mesh;
-        var cell = mesh.Cells[final.PeakCell];
-        var at = mesh.Grid.NodePosition(cell.I, cell.J, cell.K) + new Vector3(mesh.Grid.Pitch / 2, mesh.Grid.Pitch / 2, mesh.Grid.CellHeight(cell.K) / 2);
         var dropped = mesh.DroppedCells > 0 ? $" {mesh.DroppedCells:N0} cells are not connected to a mount and were left out." : "";
+        // A known fault of the native solver, not of the result: noted so that it can be traced (HANDOFF.md).
+        if (result.Passes.Where(p => p.Solve.Retried).Select(p => p.Index + 1).ToList() is { Count: > 0 } retried)
+            dropped += $" The linear solver had to be run again in pass {string.Join(", ", retried)}: its first try gave NaN.";
         // What the solver took each interface to be: a check on the picking. A force is given as it acts on the print.
         var reach = string.Join("; ", solved.Reach.Select(r => r.IsLoad
             ? $"{r.Name} loads {r.Faces:N0} cell faces with ({r.Force.X:0.##}, {r.Force.Y:0.##}, {r.Force.Z:0.##}) N"
             : $"{r.Name} holds {r.Faces:N0} cell faces"));
-        ResultSummary = $"{solved.LoadCaseName}: max von Mises {final.MaxVonMises:0.00} MPa at ({at.X:0.0}, {at.Y:0.0}, {at.Z:0.0}) mm, layer {cell.K + 1}.\n" +
-                        $"Max displacement {solved.MaxDisplacement:0.0000} mm.\n" +
+        ResultSummary = $"{solved.LoadCaseName}: {FailureLines(solved)}\n" +
+                        $"Max von Mises {final.MaxVonMises:0.00} MPa; max displacement {solved.MaxDisplacement:0.0000} mm.\n" +
                         $"{reach}.\n" +
                         $"{result.Passes.Count} {(result.Passes.Count == 1 ? "pass" : "passes")}, {final.Dofs:N0} unknowns in the last, {result.Time.TotalSeconds:0.0} s. " +
                         $"Stopped because {result.StopReason}.{dropped}\n" +
@@ -635,7 +673,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         var warnings = new List<string>();
         if (solved.Material.Kind == MatchKind.None) warnings.Add(solved.Material.Describe());
         if (final.PeakLevel > 0)
-            warnings.Add($"The peak still sits in an element of {1 << final.PeakLevel}³ cells. Coarse elements read too low (down to half the real stress), so the real peak is higher.");
+            warnings.Add(solved.Failure is null
+                ? $"The peak still sits in an element of {1 << final.PeakLevel}³ cells. Coarse elements read too low (down to half the real stress), so the real peak is higher."
+                : $"The weakest spot still sits in an element of {1 << final.PeakLevel}³ cells. Coarse elements read the stress too low (down to half), so the real safety factor is lower.");
         if (unconverged.Count > 0)
             warnings.Add($"The linear solver did not converge in pass {string.Join(", ", unconverged)}.");
         ResultWarning = string.Join("\n", warnings);
@@ -660,15 +700,89 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         return $"Material: {material.Name}, {moduli}, Poisson's ratio {stiffness.PoissonRatio:0.##}{poisson}.{whose}";
     }
 
-    /// <summary>How well the layer lines of the solved cells have bonded, and that the solve does not use it yet.</summary>
+    /// <summary>How well the layer lines of the solved cells have bonded; the strength across them is the data sheet's × that.</summary>
     static string BondLine(FemMesh mesh, LayerBonds bonds)
     {
         var lined = Enumerable.Range(0, mesh.Cells.Length).Where(e => !float.IsNaN(bonds.Gap[e])).ToList();
         if (lined.Count == 0) return "No cell lies on another, so there are no layer lines.";
         var weakest = lined.GroupBy(e => mesh.Cells[e].K).Select(g => (Layer: g.Key, Factor: g.Average(e => bonds.Factor[e]), Gap: g.Average(e => bonds.Gap[e]))).MinBy(l => l.Factor);
         return $"Layer lines bonded {lined.Min(e => bonds.Factor[e]):0%} to {lined.Max(e => bonds.Factor[e]):0%} as well as the data sheet's specimens; the weakest layer is {weakest.Layer + 1} " +
-               $"({weakest.Factor:0%}, printed {weakest.Gap:0} s after the one below). This weakens the strength across the layers, which is not checked yet; the stiffness does not depend on it.";
+               $"({weakest.Factor:0%}, printed {weakest.Gap:0} s after the one below). The strength across a layer line is the sheet's × its bond; the stiffness does not depend on it.";
     }
+
+    /// <summary>
+    /// The safety factor and what it means for the loads, how and where the part breaks first, its
+    /// weakest layer line, and what the strengths rest on; or why there is no safety factor.
+    /// </summary>
+    static string FailureLines(SolvedJob solved)
+    {
+        if (solved.Failure is not { } failure || solved.Strength is not { } cells)
+            return $"no safety factor: {solved.NoStrength}";
+        var mesh = solved.Result.Mesh;
+        var grid = mesh.Grid;
+        var bed = grid.ZBoundaries[0];
+        var factor = failure.SafetyFactor;
+        var weakest = mesh.Cells[failure.Weakest];
+        var at = ResultMarks.Centre(grid, weakest);
+        var feature = grid.Feature(weakest.I, weakest.J, weakest.K) is { } f ? $", {f.DisplayName().ToLowerInvariant()}" : "";
+        var loads = solved.Reach.Where(r => r.IsLoad).Select(r => $"{r.Name} {factor * r.Force.Length():0.#} N").ToList();
+        var breaks = factor < 1
+            ? $"safety factor {factor:0.00}: it breaks under these loads, and would hold {factor:0%} of them"
+            : $"safety factor {factor:0.00}: it starts to break at {factor:0.##} x these loads";
+        var line = mesh.Cells[failure.WeakestLayerLine];
+        var lineBond = float.IsNaN(solved.Bonds.Gap[failure.WeakestLayerLine])
+            ? "nothing below it there"
+            : $"bonded {solved.Bonds.Factor[failure.WeakestLayerLine]:0%} as well as the specimens', printed {solved.Bonds.Gap[failure.WeakestLayerLine]:0} s after the layer below";
+        var strength = cells.Strength;
+        return $"{breaks}{(loads.Count > 0 ? $" ({string.Join(", ", loads)})" : "")}. " +
+               $"{failure.Mode[failure.Weakest].DisplayName()} first, in layer {weakest.K + 1} at ({at.X:0.0}, {at.Y:0.0}, {at.Z:0.0}) mm{feature}.\n" +
+               $"Weakest layer line: under layer {line.K + 1}, {grid.ZBoundaries[line.K] - bed:0.##} mm above the bed, safety factor {failure.LayerLineSafetyFactor:0.00} against it pulling apart ({lineBond}). " +
+               $"Tsai–Wu, as a cross-check: {failure.TsaiWu.Min():0.00}.\n" +
+               $"Strength along the lines {strength.AlongLine:0.#} MPa, across them and across the layers {strength.AcrossLayers:0.#} × the bond, in compression {strength.Compression:0.#}; " +
+               "the shear strengths and the compression are assumed. These are the data sheet's best and not yet checked against broken prints: read the safety factor as a ranking more than as a margin.";
+    }
+
+    /// <summary>
+    /// The cell of the results view under a ray: what it is, how it was printed, its stress in the
+    /// frame of its lines and how near each mode is to breaking it.
+    /// </summary>
+    void Probe(Vector3 origin, Vector3 direction)
+    {
+        if (job?.Solved is not { } solved || shownSurface is not { } shown) return;
+        var face = shown.Surface.Pick(shown.Positions, origin, direction);
+        if (face < 0) return;
+        probedCell = shown.Surface.FaceCells[face];
+        ProbeText = ProbeDescription(solved, probedCell);
+        Redraw();
+    }
+
+    static string ProbeDescription(SolvedJob solved, int e)
+    {
+        var mesh = solved.Result.Mesh;
+        var grid = mesh.Grid;
+        var c = mesh.Cells[e];
+        var at = ResultMarks.Centre(grid, c);
+        var direction = grid.Direction(c.I, c.J, c.K);
+        var lines = direction.Spread >= CellColours.CrossingSpread ? "lines crossing" : $"lines at {direction.Angle * 180 / MathF.PI:0}° to X";
+        var feature = grid.Feature(c.I, c.J, c.K) is { } f ? f.DisplayName().ToLowerInvariant() : "plastic";
+        var bond = float.IsNaN(solved.Bonds.Gap[e]) ? "nothing below" : $"bonded {solved.Bonds.Factor[e]:0%} to the layer below, {solved.Bonds.Gap[e]:0} s after it";
+        var moved = Enumerable.Range(0, HexElement.Nodes).Aggregate(Vector3.Zero, (sum, a) => sum + solved.NodeDisplacements[mesh.CellNodes[8 * e + a]]) / HexElement.Nodes;
+        var text = $"Cell in layer {c.K + 1} at ({at.X:0.0}, {at.Y:0.0}, {at.Z:0.0}) mm: {feature}, {lines}, {mesh.Fill[e]:0%} full, {bond}.\n" +
+                   $"von Mises {solved.Result.VonMises[e]:0.00} MPa; moved {moved.Length():0.0000} mm.";
+        if (solved.Strength is not { } strength || solved.Failure is not { } failure) return text;
+
+        var stress = solved.Result.Stress.AsSpan(6 * e, 6);
+        Span<double> local = stackalloc double[6];
+        strength.LocalStress(e, stress, local);
+        var modes = new double[FailureModes.Count];
+        var tsaiWu = strength.Evaluate(e, stress, modes);
+        var against = string.Join(", ", Enum.GetValues<FailureMode>().Select(m => $"{m.DisplayName().ToLowerInvariant()} {SafetyText(1 / modes[(int)m])}"));
+        return text + "\n" +
+               $"Stress in its plastic along the line, across it, across the layers: {local[0]:0.00}, {local[1]:0.00}, {local[2]:0.00} MPa; shear {local[3]:0.00} in the layer, {local[5]:0.00} and {local[4]:0.00} across it.\n" +
+               $"Safety factor {SafetyText(failure.SafetyFactorOf(e))}: {against}. Tsai–Wu {SafetyText(tsaiWu)}.";
+    }
+
+    static string SafetyText(double factor) => double.IsFinite(factor) && factor < 1000 ? factor.ToString("0.00") : "over 1000";
 
     void OnLineTypeChanged(object? sender, PropertyChangedEventArgs e) => Redraw();
 
@@ -685,7 +799,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         DeformationFactor,
         ShowElements,
         CellColouring,
-        CurrentMarks());
+        CurrentMarks(),
+        probedCell);
 
     /// <summary>Brings the viewport up to date. Builds run one at a time, and the last request always wins.</summary>
     void Redraw()
@@ -723,7 +838,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         BeadLines = scene.BeadLines;
         CellGeometry = scene.Cells;
         ElementLines = scene.Elements;
+        MarkLines = scene.Marks;
         BedGrid = scene.Bed;
+        shownSurface = scene.Surface is { } surface && scene.SurfacePositions is { } positions ? (surface, positions) : null;
         Caption = scene.Caption;
         OnPropertyChanged(nameof(DeformationText));
 

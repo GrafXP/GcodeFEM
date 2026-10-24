@@ -110,7 +110,7 @@ public partial class MainWindow : Window
     /// <param name="at">In the viewport's own coordinates.</param>
     void PickAt(Point at)
     {
-        if (!viewModel.IsPicking && !viewModel.IsPlacing) return;
+        if (!viewModel.TakesClicks) return;
         var ray = Viewport.UnProject(at);
         viewModel.Pick(ray.Position, ray.Direction);
     }
@@ -147,11 +147,19 @@ public partial class MainWindow : Window
                 {
                     if (options.Text("level") is { } level and not "auto")
                         viewModel.Level = viewModel.Levels.First(l => l.Value == int.Parse(level, CultureInfo.InvariantCulture));
+                    // A picture of the window while the solve runs: the progress bar.
+                    var busy = options.Text("busy-screenshot") is { } shot ? ShootLaterAsync(shot, options.Number("busy-after") ?? 2) : Task.CompletedTask;
                     await viewModel.SolveAsync();
+                    await busy;
                     ok = viewModel.HasResult;
                 }
                 if (ok) ApplyView(view);
                 if (ok && view == ViewMode.Model) await ClickAsync();
+                if (ok && view == ViewMode.Results && options.Text("probe") is { } probe)
+                {
+                    await CameraReady();
+                    PickAt(InViewport(probe, "probe"));
+                }
                 if (ok && options.Text("save-study") is { } saved) viewModel.SaveStudy(Path.GetFullPath(saved));
             }
             if (options.Has("materials-window"))
@@ -287,6 +295,12 @@ public partial class MainWindow : Window
         // Near enough to look at single beads, far enough for the whole bed.
         camera.NearPlaneDistance = Math.Max(0.05, radius / 200);
         camera.FarPlaneDistance = Math.Max(2000, radius * 40);
+    }
+
+    async Task ShootLaterAsync(string file, double seconds)
+    {
+        await Task.Delay(TimeSpan.FromSeconds(seconds));
+        SaveScreenshot(file, (FrameworkElement)Content);
     }
 
     /// <summary>A window's content as a PNG, the 3D view included.</summary>

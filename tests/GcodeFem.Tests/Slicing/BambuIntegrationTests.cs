@@ -2,7 +2,9 @@ using System.Numerics;
 using GcodeFem.Core.Fem;
 using GcodeFem.Core.Gcode;
 using GcodeFem.Core.Geometry;
+using GcodeFem.Core.Materials;
 using GcodeFem.Core.Slicing;
+using GcodeFem.Core.Study;
 
 namespace GcodeFem.Tests.Slicing;
 
@@ -94,6 +96,43 @@ public class BambuIntegrationTests
                 .Average(n => LoadCase.Component(fem.Displacement(n), axis));
             return (Shift(to) - Shift(from)) / (to - from);
         }
+    }
+
+    /// <summary>
+    /// The check of M8: the bracket of the samples, bolted down and pulled sideways at its tip. Lying flat,
+    /// it bends in the plane of its layers; standing on edge, its upright leg bends across them and breaks
+    /// at the layer line where it meets the base, at about half the load.
+    /// </summary>
+    [BambuFact]
+    public async Task The_bracket_on_edge_breaks_at_a_layer_line_at_half_the_load()
+    {
+        var study = StudyFile.Load(TestPaths.Sample("bracket40_holes.study.json"));
+        var model = Stl.Read(study.ModelPath);
+        var slicer = new BambuSlicer(BambuInstallation.Locate(), SystemPresets(), BambuSlicer.DefaultCacheDirectory);
+        var materials = MaterialLibrary.Load(TestPaths.Materials);
+
+        var results = new List<(CellFailure Failure, FemMesh Mesh)>();
+        foreach (var turned in new[] { Vector3.Zero, new Vector3(90, 0, 0) })
+        {
+            var rotation = Orientation.FromEulerDegrees(turned.X, turned.Y, turned.Z);
+            var slice = await slicer.SliceAsync(new SliceRequest(model, rotation, Machine, study.Process!, study.Filament!));
+            var toolpath = GcodeParser.Parse(slice.GcodePath);
+            var grid = Voxelizer.Voxelize(toolpath, slice.Placement, slice.PrintMesh.Bounds, PrintClock.Calibrated(toolpath, slice.Report.FeatureSeconds));
+            var loadCase = InterfaceMapper.Map(slice.PrintMesh, slice.Placement.Rotation, grid.Pitch, study.Interfaces, study.LoadCases[0]);
+            var mesh = FemMesh.Build(grid, 0.05f, loadCase);
+            var material = materials.Match(toolpath).Material;
+            var bonds = new BondModel().Cells(grid, mesh.Cells, material.Bonding(toolpath), 0.05f);
+            var cells = new CellStrength(mesh, material.Strength(out _)!, bonds.Factor);
+            var adaptive = AdaptiveAnalysis.Run(mesh, material.Stiffness(), loadCase, LinearSolvers.Best(), new AdaptiveOptions(MinFill: 0.05f), strength: cells);
+            results.Add((adaptive.Failure!, mesh));
+        }
+
+        var ((flat, _), (onEdge, edgeMesh)) = (results[0], results[1]);
+        Assert.NotEqual(FailureMode.LayerSeparation, flat.Mode[flat.Weakest]);
+        Assert.Equal(FailureMode.LayerSeparation, onEdge.Mode[onEdge.Weakest]);
+        Assert.Equal(onEdge.WeakestLayerLine, onEdge.Weakest);
+        Assert.InRange(onEdge.SafetyFactor / flat.SafetyFactor, 0.4, 0.7); // measured: 0.870 / 1.583 = 0.55
+        Assert.Equal(51, edgeMesh.Cells[onEdge.Weakest].K + 1); // where the upright leg meets the base, 10 mm up
     }
 
     [BambuFact]

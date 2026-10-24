@@ -6,19 +6,26 @@ namespace GcodeFem.Core.Fem;
 /// <summary>
 /// Defaults as measured in M3 on printed parts: k = 2 with one buffer ring and 90 % of the energy in
 /// fine elements puts the peak stress within 5 % of a full bead-resolution solve; k = 3 gets it
-/// within 1 % for about half as many unknowns again.
+/// within 1 % for about half as many unknowns again. With a failure check (M8), the cells whose
+/// safety factor is under 4 × the lowest are refined as well, which puts the lowest safety factor
+/// within 5 % on the bracket flat and on edge and on the cube.
 /// </summary>
 /// <param name="RootLevel">Coarse elements are 2^RootLevel cells per side; 0 solves every bead cell. Null picks a level from the part's size and free memory.</param>
 /// <param name="RefineFactor">k: a leaf is refined when one of its cells has a von Mises stress above peak / k.</param>
+/// <param name="FailureRefineFactor">
+/// With a failure check, a leaf is also refined when one of its cells has a safety factor under this × the lowest.
+/// It is larger than k because the failure index falls off far faster than the stress away from the weakest spot.
+/// </param>
 /// <param name="Buffer">Rings of same-size neighbours refined along with each marked leaf.</param>
 /// <param name="RefineInterfaces">Always refine leaves that touch a fixture or a load.</param>
 /// <param name="EnergyFraction">Share of the strain energy that must sit in elements of at most 2³ cells: the coarser leaves holding the most energy are refined until it does. 0 turns it off.</param>
-/// <param name="ConvergedChange">Stop once the peak sits in bead-resolution cells and the last pass moved the stress there by less than this fraction.</param>
+/// <param name="ConvergedChange">Stop once the peak sits in bead-resolution cells and the last pass moved its failure index (or stress) by less than this fraction.</param>
 /// <param name="MaxDofs">A refinement that would exceed this is not solved; null derives it from free memory.</param>
-/// <param name="KeepPassFields">Keep every pass's element levels and stresses per cell, for a viewer to step through; 5 bytes per cell and pass.</param>
+/// <param name="KeepPassFields">Keep every pass's element levels, stresses and failure indices per cell, for a viewer to step through; 5 to 9 bytes per cell and pass.</param>
 public sealed record AdaptiveOptions(
     int? RootLevel = null,
     double RefineFactor = 2,
+    double FailureRefineFactor = 4,
     int Buffer = 1,
     bool RefineInterfaces = true,
     double EnergyFraction = 0.9,
@@ -31,7 +38,8 @@ public sealed record AdaptiveOptions(
     bool KeepPassFields = false);
 
 /// <param name="LeavesByLevel">Elements per level, bead cells first.</param>
-/// <param name="PeakCell">Bead cell with the highest von Mises stress, and <paramref name="PeakLevel"/> the level of its leaf.</param>
+/// <param name="MaxVonMises">The highest von Mises stress of any cell.</param>
+/// <param name="PeakCell">The cell the refinement is steered by: the weakest with a failure check, else the one with the highest von Mises stress; <paramref name="PeakLevel"/> is the level of its leaf.</param>
 /// <param name="Compliance">f · u, twice the strain energy: lower than the true value while the mesh is too stiff.</param>
 /// <param name="Marked">Leaves this pass marked for refinement.</param>
 /// <param name="BuildTime">Refinement, Galerkin stiffness, mesh and assembly.</param>
@@ -52,12 +60,23 @@ public sealed record AdaptivePass(
     public int Leaves => LeavesByLevel.Sum();
     public TimeSpan Time => BuildTime + Solve.Setup + Solve.Solve + StressTime;
 
+    /// <summary>The lowest safety factor of any cell in this pass; NaN without a failure check.</summary>
+    public double SafetyFactor { get; init; } = double.NaN;
+
     /// <summary>Per bead cell: the level of its element in this pass. Only with <see cref="AdaptiveOptions.KeepPassFields"/>.</summary>
     public byte[]? CellLevels { get; init; }
 
     /// <summary>Per bead cell: its von Mises stress as this pass saw it. Only with <see cref="AdaptiveOptions.KeepPassFields"/>.</summary>
     public float[]? VonMises { get; init; }
+
+    /// <summary>Per bead cell: its failure index as this pass saw it. Only with <see cref="AdaptiveOptions.KeepPassFields"/> and a failure check.</summary>
+    public float[]? FailureIndex { get; init; }
 }
+
+/// <summary>A pass of an adaptive solve whose system is built and goes to the solver.</summary>
+/// <param name="Pass">Counted from 0.</param>
+/// <param name="BeadDofs">Unknowns at bead resolution: what no pass can go beyond.</param>
+public readonly record struct AdaptiveSolving(int Pass, int Dofs, int RootLevel, int BeadDofs);
 
 public sealed class AdaptiveResult
 {
@@ -74,6 +93,10 @@ public sealed class AdaptiveResult
     public required float[] Stress { get; init; }
 
     public required float[] VonMises { get; init; }
+
+    /// <summary>Every cell checked for failure in the last pass; null if the analysis had no strengths.</summary>
+    public CellFailure? Failure { get; init; }
+
     public required IReadOnlyList<AdaptivePass> Passes { get; init; }
     public required string StopReason { get; init; }
     public required int RootLevel { get; init; }
@@ -92,15 +115,17 @@ public sealed class AdaptiveResult
 
 /// <summary>
 /// Linear static analysis on an octree over the bead cells: solve with coarse elements, read the
-/// stress of every bead cell off that solution, refine where it is high, and repeat. The cost then
-/// follows the size of the hotspots instead of the size of the part.
+/// stress of every bead cell off that solution, refine where the part is nearest to breaking (or,
+/// without strengths, where the stress is high), and repeat. The cost then follows the size of the
+/// hotspots instead of the size of the part.
 /// </summary>
 public static class AdaptiveAnalysis
 {
     /// <summary>Elements up to this level (2³ cells) count as fine for <see cref="AdaptiveOptions.EnergyFraction"/>.</summary>
     const int FineLevel = 1;
 
-    sealed record Solved(OctreeMesh Octree, double[] NodeDisplacements, float[] Stress, float[] VonMises);
+    /// <param name="Measure">Per cell: what the refinement follows, the failure index or the von Mises stress.</param>
+    sealed record Solved(OctreeMesh Octree, double[] NodeDisplacements, float[] Stress, float[] VonMises, CellFailure? Failure, float[] Measure);
 
     public static AdaptiveResult Run(CellGrid grid, OrthotropicMaterial material, LoadCase loadCase, ILinearSolver solver, AdaptiveOptions? options = null, Action<AdaptivePass>? onPass = null)
     {
@@ -110,9 +135,13 @@ public static class AdaptiveAnalysis
 
     /// <summary>Runs on a mesh that is already built (with the load case's fixtures).</summary>
     /// <param name="onPass">Called after every pass, for progress display.</param>
-    public static AdaptiveResult Run(FemMesh mesh, OrthotropicMaterial material, LoadCase loadCase, ILinearSolver solver, AdaptiveOptions? options = null, Action<AdaptivePass>? onPass = null)
+    /// <param name="strength">The cells' strengths, built on <paramref name="mesh"/>: every pass checks them and refines where the part is nearest to breaking.</param>
+    /// <param name="onSolving">Called when a pass's system is built and goes to the solver, for progress display.</param>
+    public static AdaptiveResult Run(FemMesh mesh, OrthotropicMaterial material, LoadCase loadCase, ILinearSolver solver, AdaptiveOptions? options = null, Action<AdaptivePass>? onPass = null,
+        CellStrength? strength = null, Action<AdaptiveSolving>? onSolving = null)
     {
         options ??= new AdaptiveOptions();
+        if (strength is not null && !ReferenceEquals(strength.Mesh, mesh)) throw new ArgumentException("The strengths are of another mesh.", nameof(strength));
         var maxDofs = options.MaxDofs ?? OctreeAdvisor.DofBudget();
         var rootLevel = options.RootLevel ?? OctreeAdvisor.SuggestRootLevel(mesh, maxDofs);
 
@@ -140,26 +169,38 @@ public static class AdaptiveAnalysis
                 if (system.Fixed[d]) unknowns[d] = 0;
             var buildTime = watch.Elapsed;
 
+            onSolving?.Invoke(new AdaptiveSolving(passes.Count, octree.Dofs, rootLevel, 3 * mesh.NodeCount));
             var statistics = solver.Solve(system, unknowns, options.Tolerance, options.MaxIterations);
 
             watch.Restart();
             var nodeDisplacements = octree.NodeDisplacements(unknowns);
             var (stress, vonMises) = octree.CellStresses(nodeDisplacements);
-            var peak = 0;
+            var stressPeak = 0;
             for (var e = 1; e < vonMises.Length; e++)
-                if (vonMises[e] > vonMises[peak]) peak = e;
-            var marked = Mark(octree, vonMises, vonMises[peak], interfaces, nodeDisplacements, options);
+                if (vonMises[e] > vonMises[stressPeak]) stressPeak = e;
+            // Refined where the stress is high, as that carries the load; and with a failure check also where
+            // the part is nearest to breaking, which in a printed part need not be the same place: a weak
+            // layer line can be. Refined by the failure index alone, the surroundings stayed too coarse and
+            // too stiff, and the safety factor of the bracket came out 8–10 % high.
+            var failure = strength?.Check(stress);
+            var peak = failure?.Weakest ?? stressPeak;
+            var stressLimit = vonMises[stressPeak] / options.RefineFactor;
+            var failureLimit = failure is null ? float.PositiveInfinity : failure.Index[peak] / options.FailureRefineFactor;
+            var marked = Mark(octree, e => vonMises[e] >= stressLimit || (failure is not null && failure.Index[e] >= failureLimit), interfaces, nodeDisplacements, options);
+            var measure = failure?.Index ?? vonMises;
             double compliance = 0;
             for (var d = 0; d < unknowns.Length; d++) compliance += system.RightHandSide[d] * unknowns[d];
 
-            var settled = last is not null && Settled(last.VonMises, vonMises, passes[^1].PeakCell, peak, octree, options.ConvergedChange);
-            passes.Add(new AdaptivePass(passes.Count, octree.LeavesByLevel(), octree.Dofs, octree.HangingCount, vonMises[peak], peak,
+            var settled = last is not null && Settled(last.Measure, measure, passes[^1].PeakCell, peak, octree, options.ConvergedChange);
+            passes.Add(new AdaptivePass(passes.Count, octree.LeavesByLevel(), octree.Dofs, octree.HangingCount, vonMises.Max(), peak,
                 octree.Leaves[octree.CellLeaf[peak]].Level, compliance, marked.Count, statistics, buildTime, watch.Elapsed)
             {
+                SafetyFactor = failure?.SafetyFactor ?? double.NaN,
                 CellLevels = options.KeepPassFields ? octree.CellLevels() : null,
                 VonMises = options.KeepPassFields ? vonMises : null,
+                FailureIndex = options.KeepPassFields ? failure?.Index : null,
             });
-            last = new Solved(octree, nodeDisplacements, stress, vonMises);
+            last = new Solved(octree, nodeDisplacements, stress, vonMises, failure, measure);
             onPass?.Invoke(passes[^1]);
 
             if (marked.Count == 0)
@@ -189,6 +230,7 @@ public static class AdaptiveAnalysis
             NodeDisplacements = last.NodeDisplacements,
             Stress = last.Stress,
             VonMises = last.VonMises,
+            Failure = last.Failure,
             Passes = passes,
             StopReason = stop,
             RootLevel = rootLevel,
@@ -207,8 +249,8 @@ public static class AdaptiveAnalysis
         return [.. cells];
     }
 
-    /// <summary>The coarse leaves to split next, as indices into the octree's leaves.</summary>
-    static HashSet<int> Mark(OctreeMesh octree, float[] vonMises, double peak, int[] interfaces, double[] nodeDisplacements, AdaptiveOptions options)
+    /// <summary>The coarse leaves to split next, as indices into the octree's leaves: those holding a <paramref name="hot"/> cell, and more.</summary>
+    static HashSet<int> Mark(OctreeMesh octree, Func<int, bool> hot, int[] interfaces, double[] nodeDisplacements, AdaptiveOptions options)
     {
         var marked = new HashSet<int>();
         void Add(int leaf)
@@ -216,9 +258,8 @@ public static class AdaptiveAnalysis
             if (octree.Leaves[leaf].Level > 0) marked.Add(leaf);
         }
 
-        var threshold = peak / options.RefineFactor;
-        for (var e = 0; e < vonMises.Length; e++)
-            if (vonMises[e] >= threshold) Add(octree.CellLeaf[e]);
+        for (var e = 0; e < octree.CellLeaf.Length; e++)
+            if (hot(e)) Add(octree.CellLeaf[e]);
         foreach (var cell in interfaces) Add(octree.CellLeaf[cell]);
 
         if (options.EnergyFraction > 0)
@@ -252,7 +293,7 @@ public static class AdaptiveAnalysis
 
     /// <summary>
     /// The peak cell is a bead-resolution element, and neither it nor the previous pass's peak cell
-    /// changed by more than <paramref name="change"/> of the peak. Comparing cell by cell keeps this
+    /// changed by more than <paramref name="change"/> of the peak, in failure index or in stress. Comparing cell by cell keeps this
     /// working when several places are equally loaded and the highest value hops between them.
     /// Coarse elements read far too low on printed structures (about half at 8³ cells), so a peak
     /// that still sits in one never counts as settled.

@@ -62,7 +62,10 @@ static int Usage()
                         Clamps one outer face of the printed cells (print frame: xmin, xmax, ymin, ymax, zmin = bed side,
                         zmax) and spreads --force (N, print frame) over the opposite face.
         octree options: --level auto|0..5 --k 2 --buffer 1 --energy 0.9 --change 0.03 --passes 10 --max-dofs n --no-interfaces
-                        Coarse elements hold (2^level)^3 cells; cells stressed above peak / k end up at bead resolution.
+                        --kf 4 --mark failure|vonmises
+                        Coarse elements hold (2^level)^3 cells; cells stressed above peak / k, and cells whose safety
+                        factor is under kf x the lowest, end up at bead resolution. --mark vonmises leaves out the
+                        second, as before M8.
 
         The stiffness is that of the filament's material: the material file that names the filament, else the one that
         stands in for the filament's type, else a generic one, with a warning for the last two. Each cell has the
@@ -83,10 +86,14 @@ static int Usage()
         in the model's own directions; --normal-force and --pressure push onto the face. A bolt hole is held across
         the hole and along it, with --free-along only across.
 
-        solve works at full bead resolution. adapt solves on an octree that is only fine where the stress is high;
-        --reference also runs the full solve and compares, --sweep does that for several option sets (';' between sets).
+        solve and adapt check every cell for failure: in the frame of its lines, the layer line below it pulling apart
+        (the sheet's strength across the layers x the bond), beads of a layer pulling apart, lines breaking, crushing;
+        with Tsai-Wu as a cross-check. The safety factor is the factor on the loads at which the part starts to break.
+        solve works at full bead resolution. adapt solves on an octree that is only fine where the part is nearest
+        to breaking; --reference also runs the full solve and compares, --sweep does that for several option sets
+        (';' between sets, refined by stress).
         bars slices a bar lying flat and standing up and pulls each along its length: their stiffnesses should stand
-        as the material's along the lines to across the layers.
+        as the material's along the lines to across the layers, and they break along the lines and across the layers.
         bench solves solid cantilevers of 800 x scale^3 bead cells and compares the tip with beam theory;
         with --adaptive it compares the octree with the full solve instead.
         --solver also takes amg-ilu0, amg-ilu0-single, amg-ilu1, amg-gs, amg-spai0 and amg-chebyshev.

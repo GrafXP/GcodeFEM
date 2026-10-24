@@ -15,7 +15,7 @@ namespace GcodeFem.App;
 
 public enum ViewMode { Model, Toolpaths, Cells, Results }
 
-public enum ResultQuantity { VonMises, Displacement, InterlayerStress, ElementSize }
+public enum ResultQuantity { SafetyFactor, FailureMode, VonMises, Displacement, InterlayerStress, ElementSize }
 
 /// <summary>
 /// What the cells view colours by: how full each cell is, which way its lines run, their line
@@ -31,6 +31,7 @@ public enum CellColouring { Fill, Direction, Feature, Bond, Gap, Interfaces }
 /// <param name="ScaleTop">The colour scale ends at this fraction of the largest value, so a single sharp peak does not darken everything else.</param>
 /// <param name="Deformation">Factor on the displacements for the deformed shape; 0 draws the part as printed.</param>
 /// <param name="Marks">The interfaces, with their values in the load case shown.</param>
+/// <param name="ProbedCell">The cell of the result that was clicked, −1 for none.</param>
 sealed record ViewState(
     ViewMode Mode,
     int LayerLow,
@@ -44,7 +45,8 @@ sealed record ViewState(
     float Deformation,
     bool ShowElements,
     CellColouring CellColouring,
-    IReadOnlyList<InterfaceMark> Marks);
+    IReadOnlyList<InterfaceMark> Marks,
+    int ProbedCell);
 
 /// <summary>One sliced orientation of the part with everything derived from it. The next slice replaces it as a whole.</summary>
 sealed class PrintJob
@@ -76,9 +78,10 @@ sealed class SolvedJob
     /// <param name="reach">What each interface got hold of on the cells.</param>
     /// <param name="material">The material it was solved with, and how the filament came by it.</param>
     /// <param name="bonds">Per cell of the result's mesh: its bond to the cell below.</param>
-    public SolvedJob(AdaptiveResult result, string loadCase, IReadOnlyList<InterfaceReach> reach, MaterialMatch material, LayerBonds bonds)
+    /// <param name="strength">What the cells were checked against; null if the material gives no strength, and why in <paramref name="noStrength"/>.</param>
+    public SolvedJob(AdaptiveResult result, string loadCase, IReadOnlyList<InterfaceReach> reach, MaterialMatch material, LayerBonds bonds, CellStrength? strength, string? noStrength)
     {
-        (LoadCaseName, Reach, Material, Bonds) = (loadCase, reach, material, bonds);
+        (LoadCaseName, Reach, Material, Bonds, Strength, NoStrength) = (loadCase, reach, material, bonds, strength, noStrength);
         Result = result;
         NodeDisplacements = ResultFields.NodeDisplacements(result);
         Displacement = ResultFields.DisplacementMagnitude(result.Mesh, NodeDisplacements);
@@ -92,6 +95,12 @@ sealed class SolvedJob
     public IReadOnlyList<InterfaceReach> Reach { get; }
     public MaterialMatch Material { get; }
     public LayerBonds Bonds { get; }
+    public CellStrength? Strength { get; }
+    public string? NoStrength { get; }
+
+    /// <summary>Every cell checked for failure in the last pass; null without strengths.</summary>
+    public CellFailure? Failure => Result.Failure;
+
     public Vector3[] NodeDisplacements { get; }
     public float[] Displacement { get; }
     public float[] InterlayerStress { get; }
@@ -99,9 +108,16 @@ sealed class SolvedJob
 
     /// <summary>Size of the printed part, corner to corner (mm).</summary>
     public float Diagonal { get; }
+
+    /// <summary>The result's cells, to look up a neighbour.</summary>
+    public IReadOnlySet<CellIndex> CellSet => cellSet ??= new HashSet<CellIndex>(Result.Mesh.Cells);
+
+    HashSet<CellIndex>? cellSet;
 }
 
 /// <summary>What one redraw produced; the parts that are not in the current view stay null.</summary>
+/// <param name="Marks">Lines that point something out: the weakest layer line.</param>
+/// <param name="Surface">The cell faces drawn, and <paramref name="SurfacePositions"/> where they were drawn, for a click to find its cell.</param>
 sealed record Scene(
     MeshGeometry3D? Model = null,
     MeshGeometry3D? Glyphs = null,
@@ -109,9 +125,12 @@ sealed record Scene(
     LineGeometry3D? BeadLines = null,
     MeshGeometry3D? Cells = null,
     LineGeometry3D? Elements = null,
+    LineGeometry3D? Marks = null,
     LineGeometry3D? Bed = null,
     Legend? Legend = null,
-    string Caption = "");
+    string Caption = "",
+    CellSurface? Surface = null,
+    Vector3[]? SurfacePositions = null);
 
 /// <summary>Turns the current view settings into Helix geometry. Runs off the UI thread, one build at a time.</summary>
 static class SceneBuilder
@@ -238,11 +257,30 @@ static class SceneBuilder
         // Only the last pass kept its displacements, so earlier passes are drawn undeformed.
         var deformation = isFinal ? state.Deformation : 0;
         var positions = deformation > 0 ? surface.Displaced(mesh, solved.NodeDisplacements, deformation) : surface.Positions;
+        Func<int, int, int, Vector3>? move = deformation > 0
+            ? (i, j, k) =>
+            {
+                var (x, y, z) = result.Octree.DisplacementAt(result.NodeDisplacements, i, j, k);
+                return deformation * new Vector3((float)x, (float)y, (float)z);
+            }
+            : null;
 
         Legend legend;
         Vector4[] colours;
+        var failure = solved.Failure;
         switch (state.Quantity)
         {
+            case ResultQuantity.SafetyFactor when failure is not null:
+                var index = pass.FailureIndex ?? failure.Index;
+                colours = surface.VertexColours(e => FailureColours.SafetyColour(1.0 / index[e]));
+                legend = FailureColours.SafetyLegend();
+                break;
+            case ResultQuantity.FailureMode when failure is not null:
+                // How a cell would break matters near the weakest spot only: the same cells the refinement looks at.
+                var limit = failure.Index[failure.Weakest] / NearBreaking;
+                colours = surface.VertexColours(e => failure.Index[e] >= limit ? FailureColours.ModeColour(failure.Mode[e]) : FailureColours.FarFromBreaking);
+                legend = FailureColours.ModeLegend(Enumerable.Range(0, mesh.Cells.Length).Where(e => failure.Index[e] >= limit).Select(e => failure.Mode[e]), NearBreaking);
+                break;
             case ResultQuantity.ElementSize:
                 var steps = Palette.Ordinal(result.RootLevel + 1);
                 colours = surface.VertexColours(e => steps[levels[e]]);
@@ -261,27 +299,73 @@ static class SceneBuilder
                 break;
         }
 
+        var range = Range(job, state);
         LineGeometry3D? elements = null;
         if (state.ShowElements)
         {
-            Func<int, int, int, Vector3>? move = deformation > 0
-                ? (i, j, k) =>
-                {
-                    var (x, y, z) = result.Octree.DisplacementAt(result.NodeDisplacements, i, j, k);
-                    return deformation * new Vector3((float)x, (float)y, (float)z);
-                }
-                : null;
-            var points = OctreeWireframe.Build(mesh, levels, Range(job, state), move);
+            var points = OctreeWireframe.Build(mesh, levels, range, move);
             if (points.Length > 0) elements = Lines(points);
         }
 
+        // The weakest spot of the pass shown, the weakest layer line, and the cell clicked last.
+        var glyphs = new GlyphMesh();
+        var marks = new List<Vector3>();
+        var weakest = mesh.Cells[pass.PeakCell];
+        if (range.Contains(weakest))
+        {
+            var wayOut = ResultMarks.WayOut(solved.CellSet, weakest);
+            var size = new Vector3(mesh.Grid.Pitch, mesh.Grid.Pitch, mesh.Grid.CellHeight(weakest.K));
+            ResultMarks.AddPointer(glyphs, ResultMarks.Centre(mesh.Grid, weakest) + wayOut * size / 2 + Moved(pass.PeakCell), wayOut, 0.15f * solved.Diagonal, FailureColours.Marker);
+        }
+        if (isFinal && failure is not null && mesh.Cells[failure.WeakestLayerLine].K is var line && line >= range.KLow && line < range.KHigh)
+            marks.AddRange(ResultMarks.LayerLine(mesh, solved.CellSet, line, move));
+        if (state.ProbedCell >= 0 && state.ProbedCell < mesh.Cells.Length && range.Contains(mesh.Cells[state.ProbedCell]))
+            marks.AddRange(CellBox(mesh, state.ProbedCell, move));
+
         return new Scene(
             Cells: Mesh(positions, surface.Normals, surface.Indices, colours),
+            Glyphs: glyphs.TriangleCount == 0 ? null : Mesh([.. glyphs.Positions], [.. glyphs.Normals], [.. Enumerable.Range(0, glyphs.Positions.Count)], [.. glyphs.Colours]),
             Elements: elements,
+            Marks: marks.Count == 0 ? null : Lines([.. marks]),
             Legend: legend,
             Caption: $"pass {pass.Index + 1} of {result.Passes.Count}: {pass.Leaves:N0} elements, {pass.Dofs:N0} unknowns" +
-                     (deformation > 0 ? $"; deformation x {deformation:0.#}" : ""));
+                     (deformation > 0 ? $"; deformation x {deformation:0.#}" : ""),
+            Surface: surface,
+            SurfacePositions: positions);
+
+        // How far the middle of a cell moves in the deformed shape: the mean of its corners.
+        Vector3 Moved(int cell)
+        {
+            if (deformation == 0) return Vector3.Zero;
+            var sum = Vector3.Zero;
+            for (var a = 0; a < HexElement.Nodes; a++) sum += solved.NodeDisplacements[mesh.CellNodes[8 * cell + a]];
+            return deformation * sum / HexElement.Nodes;
+        }
     }
+
+    /// <summary>A cell's twelve edges, as point pairs.</summary>
+    static IEnumerable<Vector3> CellBox(FemMesh mesh, int cell, Func<int, int, int, Vector3>? move)
+    {
+        var c = mesh.Cells[cell];
+        Vector3 Corner(int a)
+        {
+            int i = c.I + HexElement.CornerX[a], j = c.J + HexElement.CornerY[a], k = c.K + HexElement.CornerZ[a];
+            var position = mesh.Grid.NodePosition(i, j, k);
+            return move is null ? position : position + move(i, j, k);
+        }
+        for (var a = 0; a < HexElement.Nodes; a++)
+        for (var b = a + 1; b < HexElement.Nodes; b++)
+        {
+            // Corners one step apart along a single axis share an edge.
+            var apart = Math.Abs(HexElement.CornerX[a] - HexElement.CornerX[b]) + Math.Abs(HexElement.CornerY[a] - HexElement.CornerY[b]) + Math.Abs(HexElement.CornerZ[a] - HexElement.CornerZ[b]);
+            if (apart != 1) continue;
+            yield return Corner(a);
+            yield return Corner(b);
+        }
+    }
+
+    /// <summary>The mode view shows how cells would break up to this factor × the lowest safety factor, as far as the refinement looks.</summary>
+    const double NearBreaking = 2;
 
     static (Vector4[] Colours, Legend Legend) Scaled(CellSurface surface, float[] values, ColourScale scale, string title, string unit) =>
         (surface.VertexColours(e => scale.Colour(values[e])), new Legend(title, unit, [], scale));

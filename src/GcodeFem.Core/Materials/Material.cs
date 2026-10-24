@@ -183,6 +183,47 @@ public sealed class Material
     }
 
     /// <summary>
+    /// The strengths the failure check holds the cells against; null if the material gives no tensile
+    /// strength, and the reason in <paramref name="lacking"/>. Along a line it is the sheet's tensile
+    /// strength in the plane of the layers, across the layers the one measured across them; what the
+    /// sheets do not give is assumed and said so in <see cref="PrintedStrength.Assumed"/>.
+    /// </summary>
+    /// <remarks>
+    /// The joint between two beads of a layer is a weld line like the one between layers, printed
+    /// moments apart instead of a layer later; no sheet measures it, and it takes the strength across
+    /// the layers, as this plan always meant (PLAN.md §6). That is the cautious side: unlike the
+    /// stiffness (M7), where taking E across the layers would have contradicted the sheet's own flat
+    /// specimens, a flat specimen whose lines run along it never loads that joint.
+    /// A bent specimen breaks where the plastic gives first, and that is rarely the side pressed
+    /// together; so the bending strength is below what the plastic takes in compression, and stands
+    /// in for it.
+    /// </remarks>
+    public PrintedStrength? Strength(out string? lacking)
+    {
+        lacking = null;
+        if (Number(MaterialProperty.TensileStrengthXY) is not { } along)
+        {
+            lacking = $"{Name} gives no {MaterialProperty.TensileStrengthXY.Label().ToLowerInvariant()}: the safety factor cannot be worked out until that is filled in.";
+            return null;
+        }
+        var assumed = new List<string>();
+        if (Number(MaterialProperty.TensileStrengthZ) is not { } layers)
+        {
+            layers = along;
+            assumed.Add($"across the layers as in the plane, {along:0.#} MPa, as the data sheet gives no strength across them: this is optimistic");
+        }
+        assumed.Add($"bead to bead in a layer as across the layers, {layers:0.#} MPa: no data sheet measures the joint between two beads");
+        if (Number(MaterialProperty.BendingStrengthXY) is not { } compression)
+        {
+            compression = along;
+            assumed.Add($"in compression as in tension, {along:0.#} MPa, as the data sheet gives no bending strength");
+        }
+        else assumed.Add($"in compression, in every direction, the bending strength in the plane, {compression:0.#} MPa: bent specimens break before their pressed side gives");
+        assumed.Add($"in shear 1/sqrt(3) of the tensile strength of the same plane ({layers * PrintedStrength.ShearRatio:0.#} MPa along a layer line as well bonded as the specimens'): no data sheet gives one");
+        return new PrintedStrength(along, layers, layers, compression, assumed);
+    }
+
+    /// <summary>
     /// How this material's specimens were printed, which is what the bond of a layer line is
     /// measured against: the sheet's own numbers where it gives them, and where it does not, what is
     /// assumed instead, said in <see cref="BondReference.Assumed"/>. No sheet says how long a

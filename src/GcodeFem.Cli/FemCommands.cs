@@ -13,8 +13,13 @@ static class FemCommands
 {
     /// <summary>A sliced, voxelized part with its mounts and loads.</summary>
     /// <param name="Bonding">What the bond of its layer lines is measured against.</param>
-    public sealed record Problem(CellGrid Grid, OrthotropicMaterial Material, LoadCase LoadCase, float MinFill, BondReference Bonding)
+    /// <param name="Strength">What its cells are checked against; null if the material gives no strength.</param>
+    public sealed record Problem(CellGrid Grid, OrthotropicMaterial Material, LoadCase LoadCase, float MinFill, BondReference Bonding, PrintedStrength? Strength)
     {
+        /// <summary>The cells' strengths on <paramref name="mesh"/>, each layer line as strong as it has bonded; null without strengths.</summary>
+        public CellStrength? CellStrength(FemMesh mesh) =>
+            Strength is { } strength ? new CellStrength(mesh, strength, new BondModel().Cells(mesh.Grid, mesh.Cells, Bonding, MinFill).Factor) : null;
+
         /// <summary>Nodes of <paramref name="mesh"/> that carry load.</summary>
         public List<int> LoadedNodes(FemMesh mesh)
         {
@@ -31,7 +36,7 @@ static class FemCommands
     {
         var study = commandLine.Option("study") is { } path ? StudyFile.Load(path) : null;
         var (result, toolpath) = await SliceCommands.SliceAndParse(commandLine, study);
-        var (material, bonding) = Material(commandLine, toolpath);
+        var (material, bonding, strength) = Material(commandLine, toolpath);
 
         var watch = Stopwatch.StartNew();
         var grid = Voxelize(result, toolpath);
@@ -58,7 +63,7 @@ static class FemCommands
         }
         Console.WriteLine($"cells        grid {grid.SizeX} x {grid.SizeY} x {grid.SizeZ}, {grid.BlockCount} blocks of {CellGrid.BlockSize}^3; " +
                           $"voxelized in {voxelized.TotalSeconds:0.00} s, {grid.TotalVolume:0.0} mm3 deposited, {grid.LostVolume:0.000} mm3 outside the grid");
-        return new Problem(grid, material, loadCase, minFill, bonding);
+        return new Problem(grid, material, loadCase, minFill, bonding, strength);
     }
 
     /// <summary>The part's cells, with times stretched to the slicer's own (acceleration included).</summary>
@@ -73,10 +78,10 @@ static class FemCommands
 
     /// <summary>
     /// The stiffness to solve with: that of the material of the filament the part was sliced with
-    /// (or of --material), unless --isotropic, --E or --nu say otherwise; and what the bond of the
-    /// layer lines is measured against.
+    /// (or of --material), unless --isotropic, --E or --nu say otherwise; what the bond of the layer
+    /// lines is measured against; and the strengths the cells are checked against.
     /// </summary>
-    static (OrthotropicMaterial Stiffness, BondReference Bonding) Material(CommandLine commandLine, Toolpath toolpath, bool print = true)
+    static (OrthotropicMaterial Stiffness, BondReference Bonding, PrintedStrength? Strength) Material(CommandLine commandLine, Toolpath toolpath, bool print = true)
     {
         var match = MaterialCommands.For(commandLine, toolpath);
         var changes = new List<string>();
@@ -108,7 +113,7 @@ static class FemCommands
             Console.WriteLine();
             MaterialCommands.Print(match, material, changes);
         }
-        return (material, match.Material.Bonding(toolpath));
+        return (material, match.Material.Bonding(toolpath), match.Material.Strength(out _));
     }
 
     /// <summary>What the cells are made of: the share of each line type, and of cells where lines run more than one way.</summary>
@@ -146,7 +151,38 @@ static class FemCommands
                           $"weakest layer {weakest.Layer + 1}: {weakest.Factor:0.00}, printed {weakest.Gap:0.0} s after the one below");
         Console.WriteLine($"  against    the specimens: nozzle {reference.NozzleTemperature:0} C, layers {reference.LayerTime:0.#} s apart, fan {reference.Fan:0%}, glass transition {reference.GlassTransition:0} C");
         foreach (var assumption in reference.Assumed) Console.WriteLine($"  assumed    {Text.Ascii(assumption)}");
-        Console.WriteLine("  (the solve does not use it: it lowers the strength across the layers, which the failure check will take)");
+        Console.WriteLine("  (the stiffness does not depend on it; the failure check takes the strength across each layer line as the sheet's x its bond)");
+    }
+
+    /// <summary>The safety factor, how and where the part breaks first, the load it breaks at, its weakest layer line, and the Tsai-Wu cross-check.</summary>
+    public static void PrintFailure(FemMesh mesh, CellStrength cells, CellFailure failure, LoadCase loadCase)
+    {
+        var grid = mesh.Grid;
+        var (factor, weakest) = (failure.SafetyFactor, failure.Weakest);
+        string Describe(int e)
+        {
+            var c = mesh.Cells[e];
+            var feature = grid.Feature(c.I, c.J, c.K)?.DisplayName().ToLowerInvariant() ?? "plastic";
+            var direction = grid.Direction(c.I, c.J, c.K);
+            var lines = direction.Spread >= CellColours.CrossingSpread ? "lines crossing" : $"lines at {direction.Angle * 180 / MathF.PI:0} deg";
+            return $"layer {c.K + 1} at {Text.Format(CellCentre(mesh, e))} ({feature}, {lines}, fill {mesh.Fill[e]:0.00}, bond {cells.Bond(e):0.00})";
+        }
+        Console.WriteLine($"failure      safety factor {factor:0.000}: {failure.Mode[weakest].DisplayName().ToLowerInvariant()} first, {Describe(weakest)}");
+
+        // Linear: every load times the safety factor is where it starts to break.
+        var loads = Assembler.Reach(mesh, loadCase).Where(r => r.IsLoad).Select(r => (r.Name, r.Force))
+            .Concat(loadCase.Loads.Select(l => (Name: "the load", Force: l.TotalForce))).ToList();
+        Console.WriteLine($"  breaks at  {factor:0.###} x the loads: {string.Join(", ", loads.Select(l => $"{l.Name} {factor * l.Force.Length():0.#} N"))}");
+
+        var line = failure.WeakestLayerLine;
+        Console.WriteLine($"  layer line weakest under layer {mesh.Cells[line].K + 1}, {grid.ZBoundaries[mesh.Cells[line].K] - grid.ZBoundaries[0]:0.##} mm above the bed: " +
+                          $"safety factor {failure.LayerLineSafetyFactor:0.000} against it pulling apart, {Describe(line)}");
+
+        var near = Enumerable.Range(0, mesh.Cells.Length).Where(e => failure.Index[e] >= failure.Index[weakest] / 2).ToList();
+        var modes = near.GroupBy(e => failure.Mode[e]).OrderByDescending(g => g.Count()).Select(g => $"{g.Key.DisplayName().ToLowerInvariant()} {g.Count() / (double)near.Count:0%}");
+        Console.WriteLine($"  modes      of the {near.Count:N0} cells within twice the lowest safety factor: {string.Join(", ", modes)}");
+        var tsaiWu = Enumerable.Range(0, mesh.Cells.Length).MinBy(e => failure.TsaiWu[e]);
+        Console.WriteLine($"  Tsai-Wu    {failure.TsaiWu[tsaiWu]:0.000} at its lowest (cross-check), {Describe(tsaiWu)}");
     }
 
     /// <summary>What each interface of a study got hold of on the cells: how many cell faces, their area, and the force that arrives.</summary>
@@ -180,6 +216,7 @@ static class FemCommands
             var mean = face.Aggregate(Vector3.Zero, (a, b) => a + b) / face.Count;
             Console.WriteLine($"  loaded face mean displacement {Text.Format(mean)} mm");
         }
+        if (problem.CellStrength(fem.Mesh) is { } cells) PrintFailure(fem.Mesh, cells, cells.Check(fem.Stress), problem.LoadCase);
         return 0;
     }
 
@@ -199,12 +236,14 @@ static class FemCommands
         var bar = MeshFactory.Box(Vector3.Zero, new Vector3(length, width, height));
 
         var moduli = new List<(string Name, double Printed, double Isotropic, double Filled)>();
+        var breaking = new List<(double Force, FailureMode Mode)>();
         OrthotropicMaterial material = default;
+        PrintedStrength? strength = null;
         foreach (var (name, turned, axis) in new[] { ("flat", Vector3.Zero, Axis.X), ("upright", new Vector3(0, -90, 0), Axis.Z) })
         {
             Console.WriteLine($"=== {name} ===");
             var (result, toolpath) = await SliceCommands.SliceAndParse(commandLine, model: bar, turned: turned, brief: true);
-            (material, var bonding) = Material(commandLine, toolpath, print: moduli.Count == 0);
+            (material, var bonding, strength) = Material(commandLine, toolpath, print: moduli.Count == 0);
             Console.WriteLine();
             var grid = Voxelize(result, toolpath);
             var loadCase = LoadCase.ClampAndPush(grid.OccupiedBounds(minFill), axis, fixMax: false, force * LoadCase.Unit(axis));
@@ -217,6 +256,16 @@ static class FemCommands
             var same = StaticAnalysis.Run(fem.Mesh, isotropic, loadCase, solver, options);
             var model = result.PrintMesh.Bounds;
             moduli.Add((name, Modulus(fem, model, axis, force), Modulus(same, model, axis, force), fem.Mesh.Cells.Sum(c => (double)grid.Volume(c.I, c.J, c.K)) / (model.Size.X * model.Size.Y * model.Size.Z)));
+            if (strength is not null)
+            {
+                // Where it breaks away from the clamp and the load, in the same middle half the strain is read on.
+                var failure = new CellStrength(fem.Mesh, strength, new BondModel().Cells(grid, fem.Mesh.Cells, bonding, minFill).Factor).Check(fem.Stress);
+                var (low, span) = (LoadCase.Component(model.Min, axis), LoadCase.Component(model.Size, axis));
+                var middle = Enumerable.Range(0, fem.Mesh.Cells.Length)
+                    .Where(e => LoadCase.Component(CellCentre(fem.Mesh, e), axis) is var at && at > low + span / 4 && at < low + 3 * span / 4)
+                    .MaxBy(e => failure.Index[e]);
+                breaking.Add((force / failure.Index[middle], failure.Mode[middle]));
+            }
             Console.WriteLine();
         }
 
@@ -227,6 +276,12 @@ static class FemCommands
             Console.WriteLine($"  {name,-10} {printed,8:0} {same,15:0} {filled,8:0%}");
         Console.WriteLine($"  ratio      flat / upright {flat.Printed / upright.Printed:0.000}, the same every way {flat.Isotropic / upright.Isotropic:0.000}; " +
                           $"what the material adds {flat.Printed / upright.Printed / (flat.Isotropic / upright.Isotropic):0.000}, its in-plane / across-layers modulus {material.AlongLine / material.AcrossLayers:0.000}");
+        if (breaking.Count == 2 && strength is not null)
+        {
+            var section = width * height;
+            Console.WriteLine($"  breaking   in the middle half: flat {breaking[0].Force:0} N ({breaking[0].Mode.DisplayName().ToLowerInvariant()}), upright {breaking[1].Force:0} N ({breaking[1].Mode.DisplayName().ToLowerInvariant()}); " +
+                              $"over the section {breaking[0].Force / section:0.0} and {breaking[1].Force / section:0.0} MPa, the strengths along the lines {strength.AlongLine:0.#} and across the layers {strength.AcrossLayers:0.#}");
+        }
         return 0;
     }
 
@@ -299,7 +354,7 @@ static class FemCommands
         PrintMesh(mesh);
         Console.WriteLine($"system       {mesh.NodeCount:N0} nodes, {fem.Dofs:N0} DOF, {fem.System.NonZeros / 1e6:0.0} M non-zeros, {Text.Megabytes(fem.System.Bytes)}; " +
                           $"mesh {fem.MeshTime.TotalSeconds:0.00} s, assembly {fem.AssemblyTime.TotalSeconds:0.00} s");
-        Console.WriteLine($"solver       {fem.Solve.Solver}: {fem.Solve.Iterations} iterations, residual {fem.Solve.Residual:0.0e+0}{(fem.Solve.Converged ? "" : " NOT CONVERGED")}, " +
+        Console.WriteLine($"solver       {fem.Solve.Solver}: {fem.Solve.Iterations} iterations, residual {fem.Solve.Residual:0.0e+0}{(fem.Solve.Converged ? "" : " NOT CONVERGED")}{(fem.Solve.Retried ? " (solved again: the first try gave NaN)" : "")}, " +
                           $"setup {fem.Solve.Setup.TotalSeconds:0.00} s, solve {fem.Solve.Solve.TotalSeconds:0.00} s; stresses {fem.StressTime.TotalSeconds:0.00} s");
 
         var worst = Enumerable.Range(0, mesh.Cells.Length).MaxBy(e => fem.VonMises[e]);

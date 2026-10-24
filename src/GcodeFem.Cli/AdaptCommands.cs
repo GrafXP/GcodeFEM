@@ -18,19 +18,37 @@ static class AdaptCommands
         FemCommands.PrintReach(mesh, problem.LoadCase);
         if (commandLine.Option("sweep") is { } variants) return Sweep(variants, commandLine, problem, mesh, solver);
         var options = Resolve(Options(commandLine, problem.MinFill), mesh, out var suggested);
+        // Refined where the part is nearest to breaking, unless --mark vonmises asks for the stress as in M3.
+        var cells = problem.CellStrength(mesh);
+        var byStress = commandLine.Option("mark") switch
+        {
+            null or "failure" => false,
+            "vonmises" => true,
+            var other => throw new FormatException($"--mark expects failure or vonmises but got '{other}'."),
+        };
 
+        Console.WriteLine(byStress || cells is null
+            ? "refining     where the von Mises stress is above the peak / k"
+            : $"refining     where the von Mises stress is above the peak / k, and where the safety factor is under {options.FailureRefineFactor:0.##} (kf) x the lowest");
         PrintHeader(options, suggested);
-        var adaptive = AdaptiveAnalysis.Run(mesh, problem.Material, problem.LoadCase, solver, options, pass => Console.WriteLine(Row(pass, options)));
+        var adaptive = AdaptiveAnalysis.Run(mesh, problem.Material, problem.LoadCase, solver, options, pass => Console.WriteLine(Row(pass, options)), byStress ? null : cells);
         Console.WriteLine($"stopped      {adaptive.StopReason}");
         var memory = FemCommands.PeakWorkingSet();
-        var peak = adaptive.Final.PeakCell;
+        var peak = Enumerable.Range(0, mesh.Cells.Length).MaxBy(e => adaptive.VonMises[e]);
         var loaded = problem.LoadedNodes(mesh);
         var mean = loaded.Select(adaptive.Displacement).Aggregate(Vector3.Zero, (a, b) => a + b) / Math.Max(1, loaded.Count);
         Console.WriteLine($"result       max von Mises {adaptive.Final.MaxVonMises:0.00} MPa at {Text.Format(FemCommands.CellCentre(mesh, peak))} (fill {mesh.Fill[peak]:0.00}); " +
                           $"loaded face mean displacement {Text.Format(mean)} mm");
+        var failure = cells is null ? null : adaptive.Failure ?? cells.Check(adaptive.Stress);
+        if (failure is not null)
+        {
+            FemCommands.PrintFailure(mesh, cells!, failure, problem.LoadCase);
+            var level = adaptive.Octree.Leaves[adaptive.Octree.CellLeaf[failure.Weakest]].Level;
+            if (level > 0) Console.WriteLine($"  WARNING    the weakest spot sits in an element of {1 << level}^3 cells: coarse elements read the stress too low, so the real safety factor is lower");
+        }
         Console.WriteLine($"cost         {adaptive.Final.Dofs:N0} DOF in the last of {adaptive.Passes.Count} passes, {adaptive.Time.TotalSeconds:0.00} s in total, peak working set {Text.Megabytes(memory)}");
         if (commandLine.Flag("reference"))
-            PrintComparison(adaptive, StaticAnalysis.Run(mesh, problem.Material, problem.LoadCase, solver, new AnalysisOptions(problem.MinFill)), problem);
+            PrintComparison(adaptive, StaticAnalysis.Run(mesh, problem.Material, problem.LoadCase, solver, new AnalysisOptions(problem.MinFill)), problem, cells, failure);
         return 0;
     }
 
@@ -47,8 +65,12 @@ static class AdaptCommands
         var top = hot.Where(e => reference.VonMises[e] >= 0.9 * peak).ToList();
         var loaded = problem.LoadedNodes(mesh);
         var displacement = loaded.Select(reference.Displacement).Aggregate(Vector3.Zero, (a, b) => a + b).Length();
-        Console.WriteLine($"reference    {reference.Dofs:N0} DOF, {reference.Solve.Iterations} iterations, {time:0.00} s; max von Mises {peak:0.00} MPa; {hot.Count:N0} cells above half of it, {top.Count:N0} above 90 %");
-        Console.WriteLine($"{"variant",-34} {"root",4} {"passes",6} {"DOF",9} {"of ref",7} {"time s",7} {"of ref",7} {"vM/ref",7} {"u/ref",7} {"C/ref",7} {"hot err",8} {"top err",8}  stopped because");
+        // With strengths, each variant refines where the part is nearest to breaking too, and its safety factor is compared.
+        var cells = problem.CellStrength(mesh);
+        var full = cells?.Check(reference.Stress);
+        Console.WriteLine($"reference    {reference.Dofs:N0} DOF, {reference.Solve.Iterations} iterations, {time:0.00} s; max von Mises {peak:0.00} MPa; {hot.Count:N0} cells above half of it, {top.Count:N0} above 90 %" +
+                          (full is null ? "" : $"; safety factor {full.SafetyFactor:0.000}"));
+        Console.WriteLine($"{"variant",-34} {"root",4} {"passes",6} {"DOF",9} {"of ref",7} {"time s",7} {"of ref",7} {"vM/ref",7} {"u/ref",7} {"C/ref",7} {"hot err",8} {"top err",8} {"ref/SF",7}  stopped because");
 
         foreach (var variant in variants.Split(';', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
         {
@@ -60,19 +82,21 @@ static class AdaptCommands
                 {
                     "level" => options with { RootLevel = (int)value },
                     "k" => options with { RefineFactor = value },
+                    "kf" => options with { FailureRefineFactor = value },
                     "buffer" => options with { Buffer = (int)value },
                     "energy" => options with { EnergyFraction = value },
                     "change" => options with { ConvergedChange = value },
                     "passes" => options with { MaxPasses = (int)value },
-                    _ => throw new FormatException($"--sweep knows level, k, buffer, energy, change and passes, not '{key}'."),
+                    _ => throw new FormatException($"--sweep knows level, k, kf, buffer, energy, change and passes, not '{key}'."),
                 };
             }
-            var adaptive = AdaptiveAnalysis.Run(mesh, problem.Material, problem.LoadCase, solver, options);
+            var adaptive = AdaptiveAnalysis.Run(mesh, problem.Material, problem.LoadCase, solver, options, strength: cells);
             double Error(int cell) => Math.Abs(adaptive.VonMises[cell] - reference.VonMises[cell]) / peak;
+            var safety = full is null || adaptive.Failure is null ? "-" : (full.SafetyFactor / adaptive.Failure.SafetyFactor).ToString("0.000");
             Console.WriteLine($"{variant,-34} {adaptive.RootLevel,4} {adaptive.Passes.Count,6} {adaptive.Final.Dofs,9:N0} {(double)adaptive.Final.Dofs / reference.Dofs,7:0.0%} " +
                               $"{adaptive.Time.TotalSeconds,7:0.00} {adaptive.Time.TotalSeconds / time,7:0.0%} {adaptive.Final.MaxVonMises / peak,7:0.000} " +
                               $"{loaded.Select(adaptive.Displacement).Aggregate(Vector3.Zero, (a, b) => a + b).Length() / displacement,7:0.000} {adaptive.Final.Compliance / Compliance(reference),7:0.000} " +
-                              $"{hot.Max(Error),8:0.0%} {top.Max(Error),8:0.0%}  {adaptive.StopReason}");
+                              $"{hot.Max(Error),8:0.0%} {top.Max(Error),8:0.0%} {safety,7}  {adaptive.StopReason}");
         }
         return 0;
     }
@@ -120,6 +144,7 @@ static class AdaptCommands
         {
             RootLevel = commandLine.Option("level") is { } level and not "auto" ? int.Parse(level) : null,
             RefineFactor = commandLine.Number("k", defaults.RefineFactor),
+            FailureRefineFactor = commandLine.Number("kf", defaults.FailureRefineFactor),
             Buffer = (int)commandLine.Number("buffer", defaults.Buffer),
             RefineInterfaces = !commandLine.Flag("no-interfaces"),
             EnergyFraction = commandLine.Number("energy", defaults.EnergyFraction),
@@ -149,14 +174,16 @@ static class AdaptCommands
         Console.WriteLine($"octree       root level {root}{(suggested ? " (suggested)" : "")}: {(root == 0 ? "every bead cell is an element" : $"{1 << root}^3 cells per coarse element")}; " +
                           $"k {options.RefineFactor:0.##}, buffer {options.Buffer}, DOF budget {options.MaxDofs:N0}");
         var levels = string.Join("/", Enumerable.Range(0, root + 1).Select(l => $"L{l}"));
-        Console.WriteLine($"{"pass",5} {"elements",9}  {levels.PadRight(LevelsWidth(options))} {"DOF",10} {"hanging",8} {"build s",8} {"setup s",8} {"solve s",8} {"iters",6} {"max vM",8} {"lvl",3} {"marked",7}{extraColumns}");
+        Console.WriteLine($"{"pass",5} {"elements",9}  {levels.PadRight(LevelsWidth(options))} {"DOF",10} {"hanging",8} {"build s",8} {"setup s",8} {"solve s",8} {"iters",6} {"max vM",8} {"min SF",7} {"lvl",3} {"marked",7}{extraColumns}");
     }
 
+    /// <summary>"lvl" is the level of the element holding the cell the refinement follows: the weakest, or the one with the highest stress.</summary>
     static string Row(AdaptivePass p, AdaptiveOptions options) =>
         $"{p.Index,5} {p.Leaves,9:N0}  {string.Join("/", p.LeavesByLevel).PadRight(LevelsWidth(options))} {p.Dofs,10:N0} {p.HangingNodes,8:N0} {p.BuildTime.TotalSeconds,8:0.00} " +
-        $"{p.Solve.Setup.TotalSeconds,8:0.00} {p.Solve.Solve.TotalSeconds,8:0.00} {p.Solve.Iterations,6} {p.MaxVonMises,8:0.000} {p.PeakLevel,3} {p.Marked,7:N0}{(p.Solve.Converged ? "" : " NOT CONVERGED")}";
+        $"{p.Solve.Setup.TotalSeconds,8:0.00} {p.Solve.Solve.TotalSeconds,8:0.00} {p.Solve.Iterations,6} {p.MaxVonMises,8:0.000} {(double.IsNaN(p.SafetyFactor) ? "-" : p.SafetyFactor.ToString("0.000")),7} " +
+        $"{p.PeakLevel,3} {p.Marked,7:N0}{(p.Solve.Converged ? "" : " NOT CONVERGED")}{(p.Solve.Retried ? " (solved again: the first try gave NaN)" : "")}";
 
-    static void PrintComparison(AdaptiveResult adaptive, FemResult reference, FemCommands.Problem problem)
+    static void PrintComparison(AdaptiveResult adaptive, FemResult reference, FemCommands.Problem problem, CellStrength? cells, CellFailure? failure)
     {
         var mesh = reference.Mesh;
         var worst = Enumerable.Range(0, mesh.Cells.Length).MaxBy(e => reference.VonMises[e]);
@@ -165,7 +192,7 @@ static class AdaptCommands
         Console.WriteLine($"reference    bead resolution: {reference.Dofs:N0} DOF, {reference.Solve.Iterations} iterations, {time:0.00} s; " +
                           $"max von Mises {peak:0.00} MPa at {Text.Format(FemCommands.CellCentre(mesh, worst))} (fill {mesh.Fill[worst]:0.00})");
 
-        var apart = Vector3.Distance(FemCommands.CellCentre(mesh, worst), FemCommands.CellCentre(mesh, adaptive.Final.PeakCell));
+        var apart = Vector3.Distance(FemCommands.CellCentre(mesh, worst), FemCommands.CellCentre(mesh, Enumerable.Range(0, mesh.Cells.Length).MaxBy(e => adaptive.VonMises[e])));
         var loaded = problem.LoadedNodes(mesh);
         var displacement = loaded.Select(adaptive.Displacement).Aggregate(Vector3.Zero, (a, b) => a + b).Length()
                            / loaded.Select(reference.Displacement).Aggregate(Vector3.Zero, (a, b) => a + b).Length();
@@ -183,5 +210,16 @@ static class AdaptCommands
         Console.WriteLine($"hot cells    {hot.Count:N0} cells above half the reference peak, {hot.Count(e => Level(e) == 0):N0} of them at bead resolution; " +
                           $"largest error {Error(off):0.0%} of the peak (reference {reference.VonMises[off]:0.00} MPa, in a level-{Level(off)} leaf at {Text.Format(FemCommands.CellCentre(mesh, off))}), " +
                           $"mean {hot.Average(Error):0.00%}; within 10 % of the peak: {top.Count:N0} cells, largest error {top.Max(Error):0.0%}");
+        if (cells is null || failure is null) return;
+
+        // The same for the failure check: the lowest safety factor, where it is, and how well the cells near breaking come out.
+        var full = cells.Check(reference.Stress);
+        var weak = Enumerable.Range(0, mesh.Cells.Length).Where(e => full.Index[e] >= full.Index[full.Weakest] / 2).ToList();
+        double IndexError(int cell) => Math.Abs(failure.Index[cell] - full.Index[cell]) / full.Index[full.Weakest];
+        Console.WriteLine($"failure      reference safety factor {full.SafetyFactor:0.000} ({full.Mode[full.Weakest].DisplayName().ToLowerInvariant()}, layer {mesh.Cells[full.Weakest].K + 1}), " +
+                          $"layer line {full.LayerLineSafetyFactor:0.000} under layer {mesh.Cells[full.WeakestLayerLine].K + 1}; " +
+                          $"adaptive / reference {full.SafetyFactor / failure.SafetyFactor:0.000} (weakest spots {Vector3.Distance(FemCommands.CellCentre(mesh, full.Weakest), FemCommands.CellCentre(mesh, failure.Weakest)):0.00} mm apart), " +
+                          $"layer line {full.LayerLineSafetyFactor / failure.LayerLineSafetyFactor:0.000}; {weak.Count:N0} cells within twice the lowest, " +
+                          $"{weak.Count(e => Level(e) == 0):N0} at bead resolution, largest error {weak.Max(IndexError):0.0%} of the highest index");
     }
 }

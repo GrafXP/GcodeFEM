@@ -370,13 +370,21 @@ public sealed partial class MainViewModel
         if (e.PropertyName is nameof(InterfaceItem.Kind) or nameof(InterfaceItem.ValueText) or nameof(InterfaceItem.AlongNormal)) RedrawInterfaces();
     }
 
+    /// <summary>A click on the viewport means something: picking or placing on the model, probing a result.</summary>
+    public bool TakesClicks => IsPicking || IsPlacing || View == ViewMode.Results;
+
     /// <summary>
-    /// A click on the model view, as a ray in the print frame. While placing, the face it meets is
+    /// A click on the viewport, as a ray in the print frame. While placing, the face it meets is
     /// laid on the bed; while picking, it is added to the selected interface, or taken off if it
-    /// was part of it.
+    /// was part of it. On a result it probes the cell it meets.
     /// </summary>
     public void Pick(Vector3 origin, Vector3 direction)
     {
+        if (View == ViewMode.Results)
+        {
+            Probe(origin, direction);
+            return;
+        }
         if (View != ViewMode.Model || Part is not { } part) return;
         if (IsPlacing)
         {

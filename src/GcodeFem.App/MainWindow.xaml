@@ -26,6 +26,14 @@
 
     <DockPanel Background="{DynamicResource {x:Static SystemColors.WindowBrushKey}}">
         <StatusBar DockPanel.Dock="Bottom">
+            <!-- While a slice or a solve runs: how far it has come, how long it has taken and about how long it will still take. -->
+            <StatusBarItem Visibility="{Binding IsWorking, Converter={StaticResource Visible}}">
+                <StackPanel Orientation="Horizontal">
+                    <ProgressBar Width="220" Height="14" Minimum="0" Maximum="1" Value="{Binding WorkDone, Mode=OneWay}"
+                                 IsIndeterminate="{Binding WorkIsIndeterminate}" VerticalAlignment="Center" />
+                    <TextBlock Text="{Binding WorkTime}" Margin="8,0,4,0" MinWidth="150" VerticalAlignment="Center" />
+                </StackPanel>
+            </StatusBarItem>
             <StatusBarItem>
                 <TextBlock Text="{Binding Status}" />
             </StatusBarItem>
@@ -231,6 +239,8 @@
                         <Slider Minimum="0" Maximum="1" Value="{Binding Deformation}" SmallChange="0.05" LargeChange="0.2" />
                         <CheckBox Content="Outline the coarse elements" IsChecked="{Binding ShowElements}" Margin="0,8,0,2"
                                   ToolTip="Elements of 4 x 4 x 4 cells and larger. Where there are no outlines, the mesh is fine." />
+                        <TextBlock Style="{StaticResource Hint}" Margin="0,8,0,0"
+                                   Text="The white arrow points at the weakest spot, the white outline is the weakest layer line. Click a cell to see its numbers." />
                     </StackPanel>
                 </GroupBox>
             </StackPanel>
@@ -296,6 +306,8 @@
                     <hx:MeshGeometryModel3D Geometry="{Binding CellGeometry}" Material="{Binding ColouredMaterial}" IsHitTestVisible="False" />
                     <!-- Coarse elements lie where the values are low and the cells dark, so outlines a little lighter than those show. -->
                     <hx:LineGeometryModel3D Geometry="{Binding ElementLines}" Color="#FF898781" Thickness="0.8" DepthBias="-100" IsHitTestVisible="False" />
+                    <!-- The weakest layer line and the cell probed last. -->
+                    <hx:LineGeometryModel3D Geometry="{Binding MarkLines}" Color="White" Thickness="2" DepthBias="-200" IsHitTestVisible="False" />
                 </hx:Viewport3DX>
 
                 <Border HorizontalAlignment="Right" VerticalAlignment="Top" Margin="12,12,12,0" Padding="12,10" CornerRadius="4" MaxWidth="300"
@@ -340,6 +352,13 @@
                         </Grid>
                     </StackPanel>
                 </Border>
+
+                <!-- The cell clicked last, over the viewport so that showing it does not move the part. -->
+                <Border HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="12,0,12,12" Padding="12,10" CornerRadius="4" MaxWidth="460"
+                        Background="#E61A1A19" BorderBrush="#1AFFFFFF" BorderThickness="1"
+                        Visibility="{Binding HasProbe, Converter={StaticResource Visible}}">
+                    <TextBlock Text="{Binding ProbeText}" Foreground="White" TextWrapping="Wrap" />
+                </Border>
             </Grid>
 
             <Grid Grid.Row="2" Margin="8" Visibility="{Binding IsResultView, Converter={StaticResource Visible}}">
@@ -370,8 +389,9 @@
                         <DataGridTextColumn Header="Elements by size, bead cells first" Binding="{Binding Elements}" />
                         <DataGridTextColumn Header="Unknowns" Binding="{Binding Unknowns}" />
                         <DataGridTextColumn Header="Iterations" Binding="{Binding Iterations}" />
+                        <DataGridTextColumn Header="Safety factor" Binding="{Binding SafetyFactor}" />
                         <DataGridTextColumn Header="Max von Mises, MPa" Binding="{Binding MaxVonMises}" />
-                        <DataGridTextColumn Header="Peak lies in" Binding="{Binding PeakIn}" />
+                        <DataGridTextColumn Header="Weakest spot lies in" Binding="{Binding PeakIn}" />
                         <DataGridTextColumn Header="Time, s" Binding="{Binding Seconds}" />
                     </DataGrid.Columns>
                 </DataGrid>

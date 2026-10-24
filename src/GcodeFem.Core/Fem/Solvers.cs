@@ -6,7 +6,11 @@ using System.Text;
 namespace GcodeFem.Core.Fem;
 
 /// <param name="Residual">Relative residual |f − K u| / |f| reported by the solver.</param>
-public sealed record SolveStatistics(string Solver, int Iterations, double Residual, bool Converged, TimeSpan Setup, TimeSpan Solve);
+public sealed record SolveStatistics(string Solver, int Iterations, double Residual, bool Converged, TimeSpan Setup, TimeSpan Solve)
+{
+    /// <summary>The first try came back with NaN and the solve was run again; the figures are of the second.</summary>
+    public bool Retried { get; init; }
+}
 
 public interface ILinearSolver
 {
@@ -108,9 +112,40 @@ public sealed unsafe partial class AmgclSolver(AmgclSmoother smoother = AmgclSmo
 
     public string Name => Describe(smoother == AmgclSmoother.Auto ? AmgclSmoother.Ilu0 : smoother);
 
+    /// <summary>
+    /// Now and then the native solve comes back with NaN for a system it solves fine when asked again
+    /// (seen in M5 and M8, a few times in a hundred solves, cause unknown; HANDOFF.md). The system is
+    /// checked before it goes in, so that a fault on this side would show, and a NaN answer is retried
+    /// once from the same start.
+    /// </summary>
     public SolveStatistics Solve(LinearSystem system, double[] x, double tolerance, int maxIterations)
     {
         if (!IsAvailable) throw new DllNotFoundException($"{Library}.dll not found; run native\\build.cmd.");
+        var guess = (double[])x.Clone();
+        var first = SolveOnce(system, x, tolerance, maxIterations);
+        if (double.IsFinite(first.Residual) && x.All(double.IsFinite)) return first;
+        guess.CopyTo(x, 0);
+        return SolveOnce(system, x, tolerance, maxIterations) with { Retried = true };
+    }
+
+    /// <summary>What goes into the native solver must be finite and in range; anything else is a fault on this side.</summary>
+    static void Check(LinearSystem system, double[] x)
+    {
+        var n = system.Size;
+        if (system.RowPointers.Length != n + 1 || system.RightHandSide.Length != n || system.Coordinates.Length != n || x.Length != n)
+            throw new InvalidOperationException("The system handed to the solver has arrays of the wrong length.");
+        var bad = 0;
+        Parallel.For(0, n, row =>
+        {
+            for (var p = system.RowPointers[row]; p < system.RowPointers[row + 1]; p++)
+                if ((uint)system.Columns[p] >= (uint)n || !double.IsFinite(system.Values[p])) Interlocked.Increment(ref bad);
+            if (!double.IsFinite(system.RightHandSide[row]) || !double.IsFinite(system.Coordinates[row]) || !double.IsFinite(x[row])) Interlocked.Increment(ref bad);
+        });
+        if (bad > 0) throw new InvalidOperationException($"The system handed to the solver holds {bad:N0} entries that are not finite numbers or columns out of range.");
+    }
+
+    SolveStatistics SolveOnce(LinearSystem system, double[] x, double tolerance, int maxIterations)
+    {
         if (smoother != AmgclSmoother.Auto) return Solve(system, x, tolerance, maxIterations, smoother);
         // Short of memory, the leaner smoother that fits beats the faster one that does not.
         if (!Fits(system, AmgclSmoother.Ilu0)) return Solve(system, x, tolerance, maxIterations, AmgclSmoother.GaussSeidel);
@@ -158,6 +193,7 @@ public sealed unsafe partial class AmgclSolver(AmgclSmoother smoother = AmgclSmo
             throw new InvalidOperationException(
                 $"Not enough memory for {system.Size:N0} unknowns: the solver needs about {BytesNeeded(system, relaxation) / 1e9:0.0} GB " +
                 $"plus a quarter in reserve, and {Usable() / 1e9:0.0} GB is free. Close other programs or use the octree solve.");
+        Check(system, x);
 
         var error = new byte[1024];
         int status, iterations;

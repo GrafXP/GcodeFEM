@@ -47,8 +47,14 @@ static class MaterialCommands
             : stiffness.IsInPlaneIsotropic ? $"E {stiffness.AlongLine:0} MPa in the plane of the layers, {stiffness.AcrossLayers:0} across them"
             : $"E {stiffness.AlongLine:0} MPa along the lines, {stiffness.AcrossLine:0} across them in the plane, {stiffness.AcrossLayers:0} across the layers";
         Console.WriteLine($"  stiffness  {given}solved with {solved}, nu {stiffness.PoissonRatio:0.###}{poisson}{(changes.Count > 0 ? $"; {string.Join(", ", changes)}" : "")}");
-        if (material.Number(MaterialProperty.TensileStrengthXY) is { } strength)
-            Console.WriteLine($"  strength   {strength:0.#} MPa in the plane of the layers{(material.Number(MaterialProperty.TensileStrengthZ) is { } weak ? $", {weak:0.#} MPa across them" : "")} (tensile)");
+        if (material.Strength(out var lacking) is not { } strength)
+        {
+            Console.WriteLine($"  strength   none: {Text.Ascii(lacking!)}");
+            return;
+        }
+        Console.WriteLine($"  strength   {strength.AlongLine:0.#} MPa along the lines, {strength.AcrossLine:0.#} across them, {strength.AcrossLayers:0.#} across the layers x the bond, " +
+                          $"{strength.Compression:0.#} in compression; shear {strength.InPlaneShear:0.#} in the layer, {strength.LayerShear:0.#} across it x the bond");
+        foreach (var assumption in strength.Assumed) Console.WriteLine($"  assumed    {Text.Ascii(assumption)}");
     }
 
     static int List(CommandLine commandLine)

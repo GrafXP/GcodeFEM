@@ -143,10 +143,10 @@ GcodeFem/
       Slicing/          Bambu CLI runner, preset & filament discovery, result.json, cache
       Gcode/            parser → Toolpath (segments + per-layer data)
       Materials/        material DB, TDS import, property models
-      Voxel/            bead-cell voxelizer, per-cell material state
-      Fem/              H8 elements, octree + Galerkin coarsening, hanging nodes,
-                        assembly, BCs, stress recovery, adaptive loop, ILinearSolver
-      Failure/          criteria, safety factor, weakest-point search
+      Fem/              bead-cell voxelizer and per-cell print data, stiffness, layer bond,
+                        H8 elements, octree + Galerkin coarsening, hanging nodes, assembly,
+                        BCs, stress recovery, failure criteria and safety factor, adaptive
+                        loop, ILinearSolver
       Study/            project file, load cases, orientation runs, comparison
       Visual/           what the viewer draws, as plain arrays: beads, cell faces, element
                         outlines, colours and legends (no UI types, so it is unit-tested)
@@ -385,8 +385,8 @@ invented numbers than a table would and gives them a meaning:
 | 4 × 1.6 mm bar standing up | 1.00: its layers come 1 s apart, as the slicer cannot slow below 20 mm/s |
 | PETG HF / ABS bar lying flat | weakest 0.92 / 1.00: less fan |
 
-- **The solve does not use it.** It weakens the strength across the layers (Z_t, §8),
-  which M8 checks. The stiffness keeps the sheet's E_z: poorer bonding is known to show far
+- **The stiffness does not use it.** It weakens the strength across the layers (Z_t, §8),
+  which the failure check of M8 takes. The stiffness keeps the sheet's E_z: poorer bonding is known to show far
   more in the strength than in the stiffness, and E_z was measured across printed layer
   lines already.
 - The cell's time is a mean. Where grid infill crosses itself, a cell's mean falls late in
@@ -544,8 +544,9 @@ element, and the analysis starts with each root block as a single element.
    displacement field and the cell's own stiffness. This is cheap and already separates
    walls from infill inside one coarse element.
 3. **Mark** elements for refinement:
-   - elements holding a cell stressed above peak / k (default **k = 2**; with real failure
-     criteria in M8 this becomes SF < k × min SF)
+   - elements holding a cell stressed above peak / k (default **k = 2**)
+   - since M8, also elements holding a cell whose safety factor is under kf × the lowest
+     (default **kf = 4**; §8 has why it is not SF < k × min SF alone)
    - always: elements touching mount and load interfaces, where stress concentrates
    - strain energy: at least **90 %** of it must sit in elements of at most 2³ cells, so
      the coarser elements holding the most energy are marked until it does. This is what
@@ -674,6 +675,129 @@ F × SF.
 Reported results: min SF, its location, which mode governs, the failure load, and max
 deflection. They are shown as an SF heat map (red < 1, amber 1–2, green > 2), a
 weakest-spot marker and a colouring by governing mode.
+
+### What M8 built
+
+**The strengths** (`Material.Strength()`, `PrintedStrength`). In the frame of a cell's lines:
+
+| Strength | From | Bambu PLA Basic |
+| --- | --- | --- |
+| X, along the line | the sheet's tensile strength in the plane | 35 MPa |
+| Z, across the layers | the sheet's tensile strength across them, × the cell's bond factor (§6) | 31 MPa × 0.75…1 |
+| Y, bead to bead in a layer | Z, without the bond factor: assumed | 31 MPa |
+| in compression, every direction | the sheet's bending strength in the plane: assumed | 76 MPa |
+| shear along a plane | that plane's tensile strength / √3 (von Mises): assumed | 20.2 / 17.9 / 17.9 MPa |
+
+- Y = Z is what this plan always meant (§6), and unlike E₂ = E₃ (M7) it contradicts nothing in
+  the sheets: a flat specimen whose lines run along it never loads the joint between beads.
+- A bent specimen breaks where the plastic gives first, rarely on its pressed side, so the
+  bending strength is below what the plastic takes in compression and stands in for it.
+- A material without a tensile strength in the plane gets no safety factor, and says why. Of
+  the 45 materials, 40 give both tensile strengths; the generic stand-in of last resort gives
+  none. A material without one across the layers takes the one in the plane and is called
+  optimistic; without a bending strength, compression takes the tensile strength.
+
+**The check** (`CellStrength`, `CellFailure`). Each cell's stress is turned into the frame of
+its lines and divided by its fill: the stress in its plastic. Three planes of a printed cell
+can give way, each opening under tension across it and sliding under the shear along it:
+
+| Mode | Plane | Index |
+| --- | --- | --- |
+| layers pull apart | the layer line below the cell | √((⟨σ₃₃⟩ / Z)² + (τ₃₁² + τ₂₃²) / S_z²) |
+| beads of a layer pull apart | the joint between two beads | √((⟨σ₂₂⟩ / Y)² + (τ₁₂² + τ₂₃²) / S_y²) |
+| lines break | the line's own cross-section | √((⟨σ₁₁⟩ / X)² + (τ₁₂² + τ₃₁²) / S_x²) |
+| crushed | | the largest compression of σ₁₁, σ₂₂, σ₃₃ / the compressive strength |
+
+- Every index grows in proportion to the load, so SF = 1 / the largest is the factor on the
+  loads at which the cell breaks, and the part breaks at SF × its loads.
+- **Shear goes into every plane** it runs along. With only the normal stress in the line and
+  bead modes (this section's first plan), a plastic as strong every way pulled at 30° to its
+  lines would hold 1.27 × its tensile strength. With it, at any angle, 1 to 1.06 ×.
+- Where lines cross, the strengths along and across them are mixed by their shares, as the
+  stiffnesses are.
+- **Tsai–Wu** with the same strengths runs alongside as the cross-check. Each shear goes
+  against the weaker of the two planes it runs along; F_ij = −½ √(F_ii F_jj). Its linear terms
+  do not scale with the load, so its safety factor is the root of λ² a + λ b = 1.
+  - It reads 1.3–1.5 × higher than the modes at the bracket's weakest spot. Its linear terms
+    count compression in one direction as strengthening the cell against tension in another;
+    the modes do not.
+
+**A cell less than half full** is taken as half full. Without that, the weakest spot of the
+bracket was a cell a tenth full. Such a cell holds the edge of a bead whose middle is in the
+next cell; the mesh makes it a soft link between its neighbours, and its strain is not that of
+its plastic. Measured on the bracket ("Pull sideways", bead resolution):
+
+| Stress taken over at least | Flat: SF, where | On edge: SF, where |
+| --- | --- | --- |
+| the plastic of the cell | 1.49, an inner wall 12 % full | 0.82, a bridge 9 % full |
+| a quarter of the cell | 1.57, the outer wall at the inner corner (53 % full) | 0.835, the layer line at the inner corner |
+| **half the cell** | **1.57, the same** | **0.835, the same** |
+| the whole cell | 2.44, the same corner, top layer | 1.53, the same layer line |
+
+A quarter and a half agree. The whole cell would take a wall that straddles two cell columns
+(half full in each) at half its real stress.
+
+**The octree refines where the part is nearest to breaking** (`AdaptiveAnalysis`, with a
+`CellStrength`). It refines where the stress is above peak / k, as in M3, *and* where the safety
+factor is under kf × the lowest (`FailureRefineFactor`, `--kf`, default 4). The stress zone
+carries the load to the weak spot and is far wider: 433 cells of the flat bracket are above
+half the peak stress, but only 70 are within 2 × the lowest safety factor (10 on edge).
+Refined by the failure index alone, the surroundings stayed too coarse and too stiff. Safety
+factor of the full bead-resolution solve / the octree's, and the octree's share of the DOF:
+
+| Refined where | Bracket flat | Bracket on edge | Cube 50 N sideways |
+| --- | --- | --- | --- |
+| SF < 2 × the lowest, alone | 0.923 (31 %) | 0.902 (22 %) | |
+| stress > peak / 2, and SF < 2 × the lowest | 0.967 (35 %) | 0.934 (23 %) | 0.987 (39 %) |
+| … SF < 3 × the lowest | 0.984 (46 %) | 0.942 (27 %) | 0.989 (40 %) |
+| **… SF < 4 × the lowest (default)** | **0.991 (55 %)** | **0.959 (37 %)** | **0.995 (67 %)** |
+| stress > peak / 3, and SF < 3 × the lowest | 0.997 (50 %) | 0.961 (32 %) | 0.998 (83 %) |
+
+- In every case the weakest spot is the same cell as in the full solve.
+- The bracket on edge is the hard case for the octree, as it was before M8: its peak stress
+  alone was 0.93 with M3's defaults.
+- The passes stop as in M3, now when the weakest spot (not the stress peak) is at bead
+  resolution and settled. `--mark vonmises` refines by the stress alone, as before.
+
+**The bracket** (§10, "Pull sideways": 20 N at the tip, two bolts; PLA Basic, 0.20mm Standard):
+
+| Printed | Safety factor | Breaks at | How, where | Weakest layer line | Tsai–Wu |
+| --- | --- | --- | --- | --- | --- |
+| flat | 1.58 | 31.7 N | beads of a layer pull apart: the outer wall of the inner corner, layer 1 | under layer 4, 0.6 mm up: SF 2.86 (bond 0.76) | 2.10 |
+| on edge (90, 0, 0) | **0.87** | **17.4 N** | **layers pull apart**: at the inner corner, where the upright leg meets the base | **under layer 51, 10 mm up: the same, bond 0.80** | 1.31 |
+
+On edge it breaks at a layer line at 55 % of the flat load, the classic way a printed bracket
+fails. The cube, clamped on the bed and pushed sideways with 50 N: SF 4.26, its first layer
+line pulling apart at the clamp.
+
+**The bars of M7, pulled until they break** (`gcodefem bars`), in their middle half:
+
+| Bar | Breaks at | How | Over the bar's section | Against the sheet |
+| --- | --- | --- | --- | --- |
+| flat | 156 N | beads of a layer pull apart (the ±45° skins) | 24.3 MPa | 0.69 of X, 35 |
+| upright | 137 N | layers pull apart | 21.4 MPa | 0.69 of Z, 31 |
+
+The ratio, 1.14, is the sheet's 35 / 31 = 1.13. In absolute terms both break at 0.7 of the
+sheet's strength over their section. The stress is taken in each cell's plastic, and a cell
+holds less than its share of the section (the M7 bars hold 94–96 % plastic, and the cells at
+their edges about half). That is the cautious side, and what M10's coupons are to calibrate.
+
+**In the app.** The results view colours by safety factor, in four bands that get darker
+from breaking (red, below 1) through amber (1–2) and green (2–4) to a dark grey-green (4 and
+up), so the eye goes to the danger first and the bands read without colour vision. It also
+colours by what breaks first: the mode of each cell within 2 × the lowest safety factor, the
+rest grey. A white arrow points at the weakest spot from outside the part, and a white outline
+traces the weakest layer line. A click on the result probes a cell: what it is, how it was
+printed, its bond, its stress in the frame of its lines, and the safety factor of each mode,
+in a box over the viewport. The summary leads with the safety factor and the load it breaks at,
+how and where, the weakest layer line and Tsai–Wu, and what the strengths rest on. The pass
+table has the safety factor of each pass. `--colour safetyfactor|failuremode` and
+`--probe "x,y"` script it.
+
+**In the CLI.** `solve` and `adapt` print the strengths with what is assumed, then the safety
+factor, the load it breaks at, the weakest layer line, the share of each mode near the
+weakest spot and Tsai–Wu. `adapt --reference` and `--sweep` compare the safety factor with the
+full solve. `bars` prints the breaking loads.
 
 ---
 
@@ -846,7 +970,7 @@ of §10 ("Pull sideways"):
   digits shown, and the peak not at all. So until M7 brought stiffness that differs by
   direction, a material moved the displacements only. PETG HF's peak differs because its
   slice does.
-- The strengths are in the files and unused until M8.
+- The strengths are in the files; since M8 the failure check takes them (§8).
 
 **In the app.** The print panel says in a line what the selected filament will be solved
 with, in the colour of a caution if that is not its own material. "Materials…" opens the
@@ -986,15 +1110,58 @@ material files since M6), and solving several load cases on one matrix.
 
 - **Manual**: rotate in the viewport (gizmo, "lay this face on the bed", 90° snaps), then
   Slice & Solve. Each result is added to a comparison table.
-- **Automatic**:
-  - Candidates: lay-flat on each large planar face, plus Fibonacci-sphere samples.
-  - Prefilter: overhang area.
+- **Automatic** (amended 2026-10-23 by Martin: candidates are faces, as in Bambu Studio,
+  with a minimum size, and a preview before the sweep starts):
+  - **Candidates are the faces the part can be laid on**, as with Bambu Studio's "Lay on
+    face". No samples of the sphere: an orientation that does not stand on a face is not one
+    a user would print.
+    - A part can only rest on a plane of its **convex hull**. The candidates are those planes,
+      with the hull's facets merged where their normals differ by under 1°. A flat face
+      inside a pocket or behind a step is no candidate. The "Lay a face on the bed" of M5
+      turns any picked face downwards; if that face is not on the hull, something else
+      touches the bed first.
+    - What stands on the bed is the **contact**: the model's own triangles that lie in the
+      plane (within 0.05 mm). That is what holds the print to the plate, and what counts for
+      size. A ring standing on its end touches with its rim only, not with the disc its
+      hull spans. A part resting on edges or points has no contact and is no candidate.
+    - **The smallest contact that counts is the user's to set**, in mm², in the sweep's
+      panel, and saved with the study. There is no built-in value: until one is typed, the
+      preview shows every face with contact, largest first, and the sweep does not start.
+      For the bracket, 50 mm² keeps its 10 × 8 mm end faces and leaves out the chamfers and
+      fillets.
+    - **How many of them are swept is the user's to set as well**, in the same panel and
+      saved with the study: the largest that many of the faces left. There is no built-in
+      number either: until one is typed, all of them are taken. Beside it stands what that
+      will roughly cost: each candidate is a slice and a coarse solve (seconds each, from the
+      cache when sliced before), and the best 3 are solved in full.
+    - The turn is `Orientation.LayFlat` of M5, exact to the rounding of the angles. The spin
+      on the bed is the shortest turn from how the model lies when the sweep starts. As an
+      option, each face can also be tried spun by 45° and 90°: the walls follow the part,
+      but sparse infill and the top and bottom skins follow the bed's axes.
+    - Mirror-alike faces (the six of a cube) give alike results; they are not detected and
+      simply cost their time.
+  - **Preview before the sweep**: the candidates are shown together in 3D, each copy of the
+    part laid on its face on a patch of bed of its own, in a grid, numbered, with its contact
+    tinted and its interfaces marked as in the model view. A list beside the view gives each
+    one's contact area and height. Candidates can be ticked off there or by a click on the
+    copy (a cosmetic face that must not touch the plate, a print too tall for the printer).
+    The sweep starts from that view and runs only what is ticked. The smallest contact is
+    typed there, and the preview follows as it changes.
+  - Prefilter: overhang area, shown in the preview's list, and support volume from the slice.
   - Screen every candidate with a coarse pass only (slice + coarse solve, seconds each),
-    then run the full adaptive loop on the best 3.
-  - Rank by min SF, then max deflection, print time and filament (from `result.json`),
-    then support volume.
-- **Compare view**: table, side-by-side SF maps, and the weakest spot of each candidate.
+    then run the full adaptive loop on the best 3. The coarse pass reads the safety factor
+    high (M8: 3.35 against 1.58 for the bracket flat, 1.65 against 0.87 on edge). Screening
+    ranks the candidates and does not judge them, and M9 checks that the coarse ranking is the
+    final one on the bracket. If it is not, screening takes two passes.
+  - Rank by min SF over all load cases, then max deflection, print time and filament (from
+    `result.json`), then support volume.
+- **Compare view**: table, side-by-side SF maps, and the weakest spot of each candidate. A
+  row of the table opens that candidate's result in the views.
 - **Cache key**: hash(mesh, R, filament, presets, overrides). Reruns reuse G-code and cells.
+- **Progress**: the sweep shows in the status bar's progress bar (§12) like a single solve.
+  Its share done is (candidates done + the current one's share) / their number, and its time
+  left follows from the time per candidate so far. Each candidate's share comes from its own
+  `SolveEstimate`; the slices that make up the screening tell only their time.
 - **Stretch goal**: also compare filaments, and sweep slicer settings (wall loops, infill %
   and pattern) through process overrides.
 
@@ -1071,9 +1238,62 @@ camera direction). Since M5 it also opens a study (`--study`), adds or selects a
 interface, sets its value, and clicks on the model at pixels read off an earlier
 screenshot (`--click "640,420;757,490"`), which goes through the same code as the mouse.
 
+Since M8 the results view also colours by safety factor and by what breaks first, marks the
+weakest spot and the weakest layer line, and probes a cell on a click (§8).
+
+**A progress bar** in the status bar shows long work while it runs, with the time taken
+and, where it can tell, about how long is left. Any work hands it a function that says
+where the work stands (`WorkProgress`: step, time taken, share done, time left), read five
+times a second.
+
+- **Slicing**: Bambu Studio says nothing while it slices, so the bar runs to and fro beside
+  the time, and the status names the step (slicing, reading the toolpath, the cells, the bond).
+- **Solving** (`SolveEstimate`): the adaptive loop reports each pass as it goes to the solver
+  (`AdaptiveSolving`: pass, unknowns, root level) and as it ends.
+  - A solve takes about root level + 1 passes. A pass takes 0.3 s plus a time per unknown,
+    read off the last pass of over 20,000 unknowns (25 µs until one has run). Passes to come
+    grow as the last two did, at most 5×.
+  - The native solver says nothing until it is done, so within a pass the bar runs on the
+    clock towards the pass's predicted end and slows down rather than passing it; it never
+    goes back.
+  - On the bracket on edge, 3.4 s in, it said 9 s left of what took 10 s in all: it guessed
+    the last pass larger than it came out, and corrects itself when the pass starts.
+
+**Results on the print lines** (M8b; Martin asked for it on 2026-10-23). The results view
+gets a second way to draw a result: the toolpath's beads instead of the cells, each piece of
+a bead coloured by the result where it runs. Then a result reads as what the printer laid
+down: which wall line breaks first, which infill lines carry the load, at which layer line.
+
+- **How**: every bead is cut where it passes from one cell into the next, by the same walk
+  along the line the voxelizer makes when it deposits it (`Voxelizer`). Each piece takes the
+  value of its cell: safety factor, what breaks first, von Mises, the stress across the
+  layers, the displacement, the element size. A wall line that is safe along most of its
+  length and near breaking at a corner shows that along itself.
+- **How fine**: the result exists per cell (line width × line width × layer height), so a
+  piece is about one line width long. Two beads that share a cell (where infill meets a wall,
+  where lines overlap) show the same value. The solve says nothing finer.
+- **Deformed shape**: the ends of the pieces move with the displacement inside their cell,
+  interpolated between its corners, as the cell faces do. The bead keeps its cross-section.
+- **Everything the toolpath view has** still works:
+  - the layer range;
+  - switching line types off one by one (with the sparse infill off, the walls' safety
+    factor shows);
+  - plain lines instead of tubes for big parts.
+- **Lines outside the solve** are drawn grey, with no value: skirt, support, prime tower, and
+  islands no mount holds.
+- **Marks and probe**: the weakest spot and the weakest layer line are marked as on the
+  cells. A click on a bead probes its cell, and also says which line it is: line type,
+  layer, when it was printed, nozzle temperature and fan, and its bond to the layer below.
+- **Cost**: about one piece per cell a bead crosses, 1–2 × the cells. On the 80 mm bracket
+  (574k cells) that is up to about 10 M vertices as tubes of 10 each. Over the tube budget of
+  the toolpath view (400k pieces) it draws lines, as that view does already. The pieces are
+  cut once per result; changing the quantity only colours them again.
+- **Earlier passes**: they kept the safety factor, von Mises and the element size per cell,
+  and show those; the rest is of the last pass, as on the cells.
+
 Still to come: line-direction glyphs on the cells (M7 colours them by direction instead),
-safety factor, probe and weakest-spot marker (M8), cuts other than by layer, the part frame
-and the Compare tab (M9), and cancelling a running solve.
+cuts other than by layer, the part frame and the Compare tab (M9), and cancelling a running
+solve.
 
 ---
 
@@ -1093,8 +1313,9 @@ that comes early.
 | M5 | **Interfaces & loads editor**: picking, region growing, glyphs, load cases, project save/load | define a bracket's bolt holes + force in the UI and solve. **Done 2026-10-07:** the bracket with two bolt holes and a force on its tip is set up by clicking, saved as a study and solved, flat and standing on edge; details in §10. |
 | M6 | **Materials & TDS**: JSON DB, Bambu TDS import, filament → material mapping | PLA Basic + PETG HF generated from their PDFs with sources. **Done 2026-10-08:** both are generated from their sheets, every number with its page, and so is every other Bambu filament with a published sheet (45 materials); the solver takes the stiffness of the filament that was sliced; details in §9. |
 | M7 | **Print-aware material**: line directions, orthotropy, feature classes, bond factor from temps and time gaps | flat vs upright bar shows the TDS XY/Z ratio. **Done 2026-10-23:** every cell keeps its line direction, line type, time, nozzle and fan; the stiffness is orthotropic per cell; the bars' ratio is the sheet's once what the cells alone do is taken out (1.252 for PLA Basic, 1.175 PETG HF, 1.122 ABS), 1.325 as printed; the bond factor is computed and shown, for M8 to use; details in §6. |
-| M8 | **Failure & results**: criteria, SF, governing mode, weakest spot, deformed shape, probe. The refinement marking switches from von Mises to the real failure index. | bracket shows its weakest layer line and failure load |
-| M9 | **Orientation study**: manual compare + automatic sweep (coarse screening, refine the best 3) and ranking | ranked table of orientations for a bracket |
+| M8 | **Failure & results**: criteria, SF, governing mode, weakest spot, deformed shape, probe. The refinement marking switches from von Mises to the real failure index. | bracket shows its weakest layer line and failure load. **Done 2026-10-23:** four modes in each cell's line frame (layers, beads, lines, crushing) with Tsai–Wu alongside, Z × the bond factor; the bracket on edge breaks at its layer line 10 mm up at 17.4 N (SF 0.87), flat at 31.7 N; the octree also refines where SF < 4 × the lowest and gets the SF within 1–4 % of the full solve; shown as SF bands, modes, an arrow, the outlined layer line and a probe; details in §8. |
+| M8b | **Results on the print lines**: each bead cut at its cells and coloured by their result, deformed with them, with the toolpath view's layer range, line types and thin lines; a click on a bead probes it (§12) | the bracket's safety factor and failure modes shown on its beads, its weakest wall line found with the sparse infill switched off |
+| M9 | **Orientation study**: manual compare + automatic sweep over the faces the part can lie on (convex hull, contact at least the area the user sets, as many as the user sets), shown in a 3D preview to tick off before it starts; coarse screening, refine the best 3, ranking | the bracket's candidate faces previewed, swept, and ranked in a table |
 | M10 | **Calibrate**: print and break coupons (flat/upright bar, 0°/45° raster, hook) to tune the bond and diagonal factors; CalculiX cross-check | predicted vs measured failure loads recorded in `docs/calibration.md` |
 
 ---
@@ -1107,8 +1328,16 @@ that comes early.
 - **A data sheet's numbers are the best the plastic can do.** Bambu's specimens are
   printed solid, dried and mostly annealed (§9). A real part is neither, and across the
   layers it is weaker than the sheet says. The bond factor (M7) takes some of that into
-  account once M8 uses it; until the coupons (M10) calibrate it, a safety factor from these
-  strengths would be optimistic.
+  account in the failure check (M8). Until the coupons (M10) calibrate it, a safety factor is
+  a ranking more than a margin.
+- **Shear and compression strengths are assumed** (§8): no sheet gives them. The joint
+  between two beads of a layer is assumed as strong as a layer line printed like the
+  specimens'. And taking the stress in each cell's plastic, the model breaks the M7 bars at
+  0.7 of the sheet's strength over their section; it is on the cautious side by about that
+  much until M10 says otherwise.
+- **The native solver fails now and then** (HANDOFF.md): an access violation inside AMGCL's
+  setup, or NaN, a few times in a hundred solves, in bursts, cause unknown. A NaN is solved
+  again; a crash takes the program with it.
 - **The bond factor is a model with assumed parameters** (§6): the chamber at 35 °C, a
   cooling time of 20 s in still air, the fan cooling 7 times faster at full speed, the
   specimens printed at the preset's shortest layer time. It gets the directions right (hotter

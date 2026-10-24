@@ -627,11 +627,182 @@ Read [PLAN.md](PLAN.md) for the design. This file only tracks where things stand
 - φ is still capped at 1, and the far walls of a part still straddle two cell columns
   (M4); both cost a few percent of stiffness.
 
+## 2026-10-23 — session 7, on the desktop
+
+- M7 is committed as `fa6dc6d` and pushed on **`m3-octree`**, again without `materials/tds/`.
+- Before any change: 278 tests green.
+- **M8 is not committed yet**: Martin asked to commit M7 and then to build M8.
+
+### M8 failure and results: done
+- `Core/Fem/Failure.cs`:
+  - `FailureMode`: layers pull apart, beads of a layer pull apart, lines break, crushed.
+  - `PrintedStrength`: along, across the line, across the layers, compression; the shear
+    strengths follow (/ √3).
+  - `CellStrength`: per cell of a mesh, its line direction, spread and bond. `LocalStress`
+    gives the stress in the plastic in the line frame, over at least half the cell
+    (`FillFloor`). `Evaluate` gives every mode's index and Tsai–Wu; `Check` does every cell.
+  - `CellFailure`: index, mode, layer-line index and Tsai–Wu per cell; `Weakest`,
+    `WeakestLayerLine`, `SafetyFactor`.
+- `AdaptiveAnalysis.Run(…, strength)`:
+  - It marks cells stressed above peak / k **or** with a safety factor under kf × the lowest
+    (`AdaptiveOptions.FailureRefineFactor`, 4).
+  - `PeakCell` is the weakest cell when there is a check. New: `AdaptivePass.SafetyFactor` and
+    `FailureIndex` (kept per pass), and `AdaptiveResult.Failure`.
+- `Material.Strength(out lacking)`: the sheet's strengths, and what is assumed in words.
+- `AmgclSolver`:
+  - Checks what it hands the native solver (lengths, columns in range, finite numbers).
+  - Solves once more from the same start when the answer holds NaN (`SolveStatistics.Retried`;
+    see below).
+- `Core/Visual`:
+  - `FailureColours`: the four bands of the safety factor, the colours of the modes.
+  - `ResultMarks`: the arrow to the weakest spot, the outline of a layer line.
+  - `CellSurface.Pick`: the face under a click.
+- `GcodeFem.App`:
+  - The results view colours by safety factor (now the first choice) and by what breaks
+    first. A white arrow marks the weakest spot, a white outline the weakest layer line
+    (`MarkLines`).
+  - A click on a result probes the cell under it, in a box over the viewport.
+  - The summary leads with the safety factor and the load it breaks at. The pass table has
+    each pass's safety factor.
+  - `--colour safetyfactor|failuremode`, `--probe "x,y"`.
+- CLI:
+  - `solve` and `adapt` print the strengths with what is assumed, the safety factor, the load
+    it breaks at, the weakest layer line, the modes near the weakest spot and Tsai–Wu.
+  - `adapt` takes `--kf` and `--mark failure|vonmises`; `--reference` and `--sweep` compare
+    the safety factor with the full solve.
+  - `bars` prints the breaking loads. A pass that had to be solved again says so.
+- Tests: 310 green (about 50 s); 32 are new.
+  - The modes on stresses worked out by hand: each plane, the bond, shear, compression, a
+    plastic as strong every way at seven angles, turned lines, crossing lines, fill and the
+    fill floor.
+  - Bars of cells flat and upright, linearity, and the octree against the full solve.
+  - The material's strengths and what they assume; the colours' lightness; the layer-line
+    outline; the arrow's way out; picking.
+  - The milestone's bracket through Bambu Studio, flat and on edge.
+- Checked:
+
+  | Check | How |
+  | --- | --- |
+  | Bracket flat: SF 1.583, beads of a layer pull apart at the inner corner, breaks at 31.7 N; full solve 1.569 | `gcodefem adapt --study samples\bracket40_holes.study.json --reference` |
+  | Bracket on edge: SF 0.870, layers pull apart under layer 51 (10 mm up, bond 0.80), breaks at 17.4 N; full solve 0.835 | the same with `--rot 90,0,0` |
+  | Cube pushed sideways with 50 N: SF 4.261, its first layer line at the clamp; full solve 4.240 | `gcodefem adapt samples\cube20.stl --process "0.20mm Standard @BBL X1C" --filament "Bambu PLA Basic @BBL X1C" --fix zmin --force 50,0,0 --reference` |
+  | Bars break at 156 N flat (beads) and 137 N upright (layers): 1.14, the sheet's 35 / 31 = 1.13 | `gcodefem bars --process … --filament …` |
+  | The safety-factor bands, the arrow and the layer line, flat and on edge | `GcodeFem.App --study samples\bracket40_holes.study.json [--rot 90,0,0] --view results --colour safetyfactor --look -1,-1,-0.6 --zoom 1.4 --screenshot out.png` |
+  | What breaks first, and a probe | the same with `--colour failuremode --probe "929,301"` |
+
+- Not checked by hand: clicking the result with the mouse (the scripted `--probe` goes through
+  the same `PickAt`), and the mode view up close (at the zoom above its cells are a few
+  pixels).
+
+### What M8 found
+- **The stress in a cell's plastic is its stress / fill, but not in slivers.** Without a
+  floor, the bracket's weakest spot was a cell a tenth full. The floor at half a cell gives
+  the same answer as a quarter (PLAN.md §8 has the table).
+- **Refined by the failure index alone, the octree read the safety factor 8–10 % high.**
+  Only 10–70 cells are within 2 × the lowest safety factor, against 433 above half the peak
+  stress. The stress zone stays (k = 2), and the cells with SF < 4 × the lowest join it. That
+  puts the bracket flat at 0.9 %, on edge at 4.1 % and the cube at 0.5 % of the full solve.
+- **The first plan's modes let a nearly isotropic plastic hold 1.27 × its strength** at
+  30° to its lines: σ₁₁ / X ignored the shear. Now every plane takes the shear along it.
+- **The model breaks the bars at 0.7 of the sheet's strength** over their section; the ratio
+  flat / upright is the sheet's. Cautious by about that much until M10.
+- Tsai–Wu reads 1.3–1.5 × higher than the modes at the bracket's weakest spot: its linear
+  terms count compression in one direction as strengthening against tension in another.
+
+### The native solver fails now and then (M5, and again in M8)
+- **What was seen**:
+  - Between 21:44 and 21:59, 8 runs of the CLI died with an access violation (c0000005)
+    inside `AmgclSolver.SolveElasticity` (Windows' event log, Application, event 1026).
+  - Twice a pass came back NaN. One was the flat bracket's pass 2: ILU(0) gave NaN after its
+    150 iterations, Gauss–Seidel at once. The same system converged in 23 iterations on each
+    of the next runs.
+  - Afterwards, 27 runs in a row were clean, and a run under full CPU load crawled (no solve
+    in 10 minutes) and was stopped. Free commit was about 14 GB each time it was looked at.
+  - At 23:20 a full test run crashed the same way (testhost.exe, c0000005, address ending
+    7A21 as in two of the CLI's crashes). `dotnet test` then reported "Passed! … Total: 290"
+    of 316, without a failure. **Check the total of a test run**, not only that nothing
+    failed. The next run passed all 316.
+- **Where**: the crash of a run whose modules were logged was in AmgclBridge.dll at offset
+  0x3A0A. That is the OpenMP body of `plain_aggregates`' constructor for float matrices,
+  reading the diagonal at a column index: `(*dia)[A.col[j]]`.
+  - A float hierarchy is what the Gauss–Seidel fallback builds after ILU(0) stalls. The
+    on-edge bracket's full solve (185 iterations) always takes that path.
+  - Offsets 0x404F (the same loop for double matrices), 0x46F8 (`spai0` setup) and 0x7A21
+    (`ilu0` setup) come from crashes whose module base was not logged; they are likely but
+    not certain.
+  - These are all AMGCL setup code reading its own coarse matrices, and the input passes the
+    new check. That points at a corrupt coarse matrix inside AMGCL.
+- **Ruled out**: MSVC's OpenMP has dynamic adjustment off (`omp_get_dynamic()` 0), and every
+  parallel region got all 12 threads even with every core busy (2000 regions each way). So
+  AMGCL's per-thread tables sized by `omp_get_max_threads()` are not short of threads.
+- **How the offsets were mapped**: a build of the bridge with `/Zi`, `/DEBUG` and `/MAP`
+  (CMake: `-DCMAKE_CXX_FLAGS_RELEASE="/O2 /Ob2 /DNDEBUG /Zi"`,
+  `-DCMAKE_SHARED_LINKER_FLAGS_RELEASE="/DEBUG /MAP /OPT:REF /OPT:ICF"`) has the same code as
+  `native\bin\AmgclBridge.dll`: the same size of code, the same bytes at every offset looked
+  at. So an offset from the event log can be read off that map. No debugger (cdb) is
+  installed.
+- **What is in place**: the input check and one more solve on NaN. A crash still takes the
+  program with it.
+- **Next steps, cheapest first**:
+  - When it comes back in bursts, rerun with `OMP_NUM_THREADS=1`. No crash then means a race
+    in AMGCL's parallel setup.
+  - Try the AMGCL release after 1.5.0, or AMGCL's own `amgcl::backend::builtin` with
+    `AMGCL_NO_OPENMP` for the setup only.
+  - Solve in a child process, so that a crash costs a retry instead of the program.
+
+### After M8: a progress bar
+- Martin asked for a progress bar that shows how long a solve takes, and the orientation
+  sweeps to come.
+- Core:
+  - `WorkProgress`: step, time taken, share done, time left.
+  - `SolveEstimate`: the progress of an adaptive solve, from what it has done so far
+    (PLAN.md §12).
+  - `AdaptiveAnalysis.Run(…, onSolving)` reports each pass as it goes to the solver
+    (`AdaptiveSolving`).
+- App:
+  - `MainViewModel.Progress.cs`: `BeginWork(title, source)` / `EndWork()`, a timer that reads
+    the source five times a second, and `StepClock` for work that can only tell its time.
+  - The status bar has the bar and the times; the status text names the step.
+  - Slicing and solving use it. The sweep of M9 is to hand it a source of its own (PLAN.md §11).
+  - `--busy-screenshot file.png --busy-after s` takes a picture while the solve runs.
+- Tests: 316 green; 6 new, which replay the bracket's passes on a clock of their own. The bar
+  never goes back and ends with the solve, the pass and its size are named, and the time left
+  is within 2× at three moments.
+- Checked: `GcodeFem.App --study samples\bracket40_holes.study.json --rot 90,0,0 --view results --busy-screenshot busy.png --busy-after 4 --screenshot done.png`.
+  At 3.4 s: about 30 %, "about 9.0 s left", "Solving: refining after pass 3…"; the solve took
+  about 10 s.
+- Not checked by hand: a slice that is not in the cache (the bar runs to and fro then; every
+  slice here came from the cache).
+
+### Open items from M8
+- Assumed, until M10's coupons:
+  - Y = Z (bead to bead as across the layers, without the bond).
+  - The shear strengths (/ √3) and the compression (the bending strength).
+  - The 0.7 of the bars.
+- A cell less than half full is taken as half full: measured to be insensitive between a
+  quarter and a half, but a rule of thumb.
+- The mode view and the outline of the weakest layer line are of the last pass; earlier
+  passes show their safety factor and their weakest spot only.
+- Staircase peaks on slanted faces are not flagged (PLAN.md §7.4): the weakest spot can sit
+  on a step.
+- Tsai–Wu is reported, not used.
+- `materials/tds/` is still untracked (Bambu's PDFs; Martin to decide).
+
 ## Next
-- M8 failure and results: the criteria of PLAN.md §8 in each cell's own frame (the cell's
-  line direction is in `CellGrid.Direction`, its constitutive matrix in `CellStiffness`),
-  strengths from the material files, Z_t × the bond factor (`BondModel.Cells`), safety
-  factor, governing mode, weakest spot, probe; refinement marking by failure index.
+- M8b, results on the print lines (Martin, 2026-10-23; PLAN.md §12). The results view draws
+  the beads, cut where they pass from cell to cell (the voxelizer's walk) and coloured by their
+  cell's result. A click on a bead probes it. Before M9, so that the sweep's results can be
+  read on the lines too.
+- M9 orientation study: compare orientations by the safety factor M8 gives (and deflection,
+  print time, filament), manual and as a sweep that screens on the coarse pass and refines
+  the best 3 (PLAN.md §11). The coarse pass reads the safety factor high (pass 1 of the
+  bracket: 3.35 against 1.58), so screening must rank, not judge.
+  - Martin amended it on 2026-10-23. The candidates are the faces the part can be laid on,
+    as in Bambu Studio: planes of the convex hull whose contact with the bed is at least an
+    area the user types, and of those the largest as many as the user types (no built-in
+    value for either; both saved with the study). They are shown in a 3D preview, each copy
+    laid on its face in a grid, to tick off before the sweep starts.
+- The native solver's crash (above), before a sweep runs hundreds of solves.
 - Open items from M5:
   - A result stays on screen when the interfaces or the load case change after it; the
     summary names the load case it belongs to, but nothing marks it as out of date.

@@ -142,6 +142,39 @@ public sealed class CellSurface
 
     public Vector3 FaceCentre(int face) => (Positions[4 * face] + Positions[4 * face + 2]) / 2;
 
+    /// <summary>
+    /// The face a ray meets first, as drawn at <paramref name="positions"/> (<see cref="Positions"/>, or
+    /// the deformed shape); −1 if it misses every face.
+    /// </summary>
+    public int Pick(Vector3[] positions, Vector3 origin, Vector3 direction)
+    {
+        direction = Vector3.Normalize(direction);
+        var (best, nearest) = (-1, float.PositiveInfinity);
+        for (var f = 0; f < FaceCount; f++)
+            for (var half = 0; half < 2; half++)
+            {
+                Vector3 a = positions[Indices[6 * f + 3 * half]], b = positions[Indices[6 * f + 3 * half + 1]], c = positions[Indices[6 * f + 3 * half + 2]];
+                if (Hit(a, b, c) is { } distance && distance < nearest) (best, nearest) = (f, distance);
+            }
+        return best;
+
+        float? Hit(Vector3 a, Vector3 b, Vector3 c)
+        {
+            Vector3 e1 = b - a, e2 = c - a;
+            var h = Vector3.Cross(direction, e2);
+            var det = Vector3.Dot(e1, h);
+            if (MathF.Abs(det) < 1e-12f) return null;
+            var s = origin - a;
+            var u = Vector3.Dot(s, h) / det;
+            if (u is < 0 or > 1) return null;
+            var q = Vector3.Cross(s, e1);
+            var v = Vector3.Dot(direction, q) / det;
+            if (v < 0 || u + v > 1) return null;
+            var distance = Vector3.Dot(e2, q) / det;
+            return distance > 0 ? distance : null;
+        }
+    }
+
     /// <summary>Outward, along one of the grid's directions.</summary>
     public Vector3 FaceNormal(int face) => Normals[4 * face];
 

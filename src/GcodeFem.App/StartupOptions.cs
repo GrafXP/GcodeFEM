@@ -13,20 +13,23 @@ namespace GcodeFem.App;
 ///                [--case name] [--fix xmin|xmax|ymin|ymax|zmin|zmax] [--force x,y,z]
 ///                [--add fixed|sliding|bolthole|force|pressure|bearing] [--select name] [--name new-name] [--value "0,0,-20"]
 ///                [--lay "x,y"] [--pick-angle degrees] [--click "x,y;x,y"] [--save-study file.study.json]
-///                [--colour feature|nozzletemperature|fan|speed|time|width|fill|interfaces|vonmises|displacement|interlayerstress|elementsize]
+///                [--colour feature|nozzletemperature|fan|speed|time|width|fill|direction|bond|gap|interfaces
+///                          |safetyfactor|failuremode|vonmises|displacement|interlayerstress|elementsize]
 ///                [--layers first-last] [--hide "sparse infill,top surface"] [--thin] [--pass n] [--scale-top percent]
-///                [--deform 0..1] [--no-elements] [--look x,y,z] [--zoom factor]
+///                [--deform 0..1] [--no-elements] [--look x,y,z] [--zoom factor] [--probe "x,y"]
 ///                [--materials-window [name]] [--import-tds sheet.pdf]
-///                [--screenshot file.png] [--size 1400x900] [--wait seconds]
+///                [--screenshot file.png] [--size 1400x900] [--wait seconds] [--busy-screenshot file.png] [--busy-after seconds]
 ///
 /// --fix and --force set up a quick load case: the model's face on that side of the print is fixed and the opposite
 /// one carries the force (N, in the print's directions). --add makes a new interface and --select picks an existing
 /// one; --name, --value and --click then apply to it. --value is what would be typed into the value field: a force is
 /// in the print's directions as the part is turned by --rot. --click picks faces in the model view as the mouse
 /// would, at pixels read off a screenshot of the window; --lay lays the face at such a pixel on the bed first.
+/// --probe clicks on the result at such a pixel, which shows that cell's numbers.
 /// --materials-window opens the materials window, on the material of that name if one is given, and --import-tds
 /// reads a data sheet into its form (nothing is saved); the screenshot is then of that window.
 /// With --screenshot the app saves the picture and exits; its exit code is 1 if a step failed.
+/// --busy-screenshot saves one more while the solve runs, --busy-after seconds into it (2 by default).
 /// </summary>
 sealed class StartupOptions
 {

@@ -17,6 +17,7 @@ public partial class MaterialsWindow : Window
     public MaterialsWindow(MaterialLibrary library, PresetLibrary? presets, bool scripted = false)
     {
         InitializeComponent();
+        Look.DarkTitleBar(this);
         this.scripted = scripted;
         DataContext = viewModel = new MaterialsViewModel(library, presets);
     }

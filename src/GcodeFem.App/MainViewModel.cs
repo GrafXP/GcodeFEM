@@ -108,8 +108,12 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     // ---- model and print settings ----
 
+    /// <summary>The model's file name, and its size and triangles.</summary>
     [ObservableProperty]
-    public partial string ModelName { get; set; } = "No model";
+    public partial string ModelFile { get; set; } = "No model";
+
+    [ObservableProperty]
+    public partial string ModelSize { get; set; } = "";
 
     [ObservableProperty]
     public partial double RotationX { get; set; }
@@ -124,9 +128,11 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public ObservableCollection<string> Filaments { get; } = [];
 
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(StaleText), nameof(PrintIsStale))]
     public partial string? Process { get; set; }
 
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(StaleText), nameof(PrintIsStale))]
     public partial string? Filament { get; set; }
 
     /// <summary>The material the selected filament is solved with, in a sentence or two.</summary>
@@ -145,7 +151,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public partial string Printer { get; set; } = "Looking for Bambu Studio…";
 
     [ObservableProperty]
-    [NotifyCanExecuteChangedFor(nameof(SliceCommand), nameof(StartSweepCommand))]
+    [NotifyCanExecuteChangedFor(nameof(SliceCommand), nameof(SolveCommand), nameof(StartSweepCommand))]
     public partial bool CanSlice { get; set; }
 
     // ---- mesh ----
@@ -166,13 +172,14 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     // ---- view ----
 
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(IsToolpathView), nameof(IsCellView), nameof(IsResultView), nameof(IsCompareView), nameof(HasLayers))]
+    [NotifyPropertyChangedFor(nameof(IsToolpathView), nameof(IsCellView), nameof(IsResultView), nameof(IsCompareView), nameof(HasLayers), nameof(MouseHint))]
     public partial ViewMode View { get; set; }
 
     public bool IsToolpathView => View == ViewMode.Toolpaths;
     public bool IsCellView => View == ViewMode.Cells;
     public bool IsResultView => View == ViewMode.Results;
-    public bool HasLayers => View != ViewMode.Model && HasPrint;
+    /// <summary>The view shows the print, so its layers can be cut.</summary>
+    public bool HasLayers => View is ViewMode.Toolpaths or ViewMode.Cells or ViewMode.Results && HasPrint;
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(HasLayers))]
@@ -355,6 +362,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     /// <summary>A model is open: there are faces to compare.</summary>
     [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(SliceCommand), nameof(SolveCommand))]
     public partial bool HasModel { get; set; }
 
     [ObservableProperty]
@@ -427,6 +435,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     partial void OnViewChanged(ViewMode value)
     {
         if (value != ViewMode.Model) IsPicking = IsPlacing = false; // faces are picked on the model only
+        FollowView(value);
         if (value == ViewMode.Compare && !CompareRows.Any(row => row.CanTick))
         {
             // The first look lists the faces as the part lies now.
@@ -466,6 +475,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         // Forces are fixed to the part but read in the directions on screen, so their numbers follow the turn.
         foreach (var item in Interfaces) item.Show(SelectedLoadCase, Rotation);
         if (View == ViewMode.Model && Part is { } part) FitRequested?.Invoke(part.Transformed(Rotation).Bounds);
+        RefreshStale();
         Redraw();
     }
 
@@ -528,27 +538,34 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         HasPrint = HasResult = false;
         Passes.Clear();
         LineTypes.Clear();
-        ResultSummary = ResultWarning = ProbeText = "";
+        PrintFacts.Clear();
+        ResultSummary = ResultWarning = ProbeText = PrintWarning = "";
         probedCell = -1;
+        RefreshStale();
         ResetStudy(); // interfaces are faces of the model that was open
         ResetComparison();
         HasModel = true;
-        View = ViewMode.Model;
+        Stage = Stage.Setup;
 
         var size = mesh.Bounds.Size;
-        ModelName = $"{Path.GetFileName(path)}: {mesh.TriangleCount:N0} triangles, {size.X:0.##} x {size.Y:0.##} x {size.Z:0.##} mm";
-        Status = "Model loaded. Lay it on the face it is to be printed on, add its mounts and loads, and slice it.";
+        ModelFile = Path.GetFileName(path);
+        ModelSize = $"{size.X:0.##} × {size.Y:0.##} × {size.Z:0.##} mm · {mesh.TriangleCount:N0} triangles";
+        OnPropertyChanged(nameof(ModelPath));
+        OnPropertyChanged(nameof(DocumentPath));
+        OnPropertyChanged(nameof(DocumentName));
+        Status = "Model loaded. Lay it on the face it is to be printed on, then add its mounts and loads.";
         FitRequested?.Invoke(mesh.Transformed(Rotation).Bounds);
         Redraw();
     }
 
-    bool CanStartSlice() => CanSlice && !IsBusy;
+    bool CanStartSlice() => CanSlice && HasModel && !IsBusy;
 
     [RelayCommand(CanExecute = nameof(CanStartSlice))]
     public async Task SliceAsync()
     {
         if (Part is not { } part || bambu is null || presets is null || Process is null || Filament is null) return;
         IsBusy = true;
+        var with = (Process, Filament);
         // Bambu Studio says nothing while it slices, so the bar can only show the time it takes.
         var steps = new StepClock("Bambu Studio at work");
         BeginWork("Slicing", steps.Now);
@@ -566,7 +583,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
             if (!ReferenceEquals(Part, part)) return; // another model was opened meanwhile
 
-            ShowPrint(sliced);
+            ShowPrint(sliced, with);
             var report = sliced.Slice.Report;
             Status = $"Sliced in {sliced.Slice.Elapsed.TotalSeconds:0.0} s{(sliced.Slice.FromCache ? " (from the cache)" : "")}: {sliced.Toolpath.Layers.Length} layers, " +
                      $"{sliced.Toolpath.Segments.Length:N0} lines, {report.FilamentGrams:0.0} g, {TimeSpan.FromSeconds(report.PrintSeconds):h\\:mm} h to print; {sliced.Cells.Length:N0} cells.";
@@ -591,9 +608,12 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     }
 
     /// <summary>Makes <paramref name="sliced"/> the print the views show, without a result yet.</summary>
-    void ShowPrint(PrintJob sliced)
+    /// <param name="with">The process and filament it was sliced with.</param>
+    void ShowPrint(PrintJob sliced, (string? Process, string? Filament) with)
     {
         job = sliced;
+        slicedWith = with;
+        DescribePrint(sliced);
         HasResult = false;
         Passes.Clear();
         ResultSummary = ResultWarning = ProbeText = "";
@@ -609,17 +629,27 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         LayerCount = sliced.Grid.SizeZ;
         (LayerLow, LayerHigh) = (1, LayerCount);
         HasPrint = true;
+        RefreshStale();
         OnPropertyChanged(nameof(LayerText));
         FitRequested?.Invoke(sliced.Slice.PrintMesh.Bounds);
         if (View is ViewMode.Model or ViewMode.Results or ViewMode.Compare) View = ViewMode.Toolpaths;
         Redraw();
     }
 
-    bool CanStartSolve() => HasPrint && !IsBusy;
+    bool CanStartSolve() => HasModel && (HasPrint || CanSlice) && !IsBusy;
 
+    /// <summary>
+    /// Solves the load case shown on the print on screen. Without one, or when the part has been
+    /// turned or the process or filament changed since, it is sliced first.
+    /// </summary>
     [RelayCommand(CanExecute = nameof(CanStartSolve))]
     public async Task SolveAsync()
     {
+        if (CanSlice && (job is null || PrintIsStale))
+        {
+            await SliceAsync();
+            if (job is null || PrintIsStale) return; // the slice failed, and said so
+        }
         if (job is not { } current || SelectedLoadCase is not { } shown) return;
         IsBusy = true;
         var estimate = new SolveEstimate();
@@ -674,6 +704,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         Passes.Clear();
         foreach (var pass in solved.Result.Passes) Passes.Add(Row(pass));
         Describe(solved);
+        DescribeHeadline(solved);
         HasResult = true;
         OnPropertyChanged(nameof(DeformationText));
         View = ViewMode.Results;

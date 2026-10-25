@@ -1,7 +1,8 @@
 using System.Globalization;
 using System.IO;
 using System.Windows;
-using System.Windows.Data;
+using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -23,6 +24,7 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        Look.DarkTitleBar(this);
         DataContext = viewModel;
         if (options.Size("size") is { } size) (Width, Height) = size;
         viewModel.FitRequested += FitCamera;
@@ -47,8 +49,94 @@ public partial class MainWindow : Window
     async void OpenStudy_Click(object sender, RoutedEventArgs e)
     {
         var dialog = new OpenFileDialog { Filter = StudyFilter };
-        if (dialog.ShowDialog(this) == true) await TryAsync(() => viewModel.OpenStudyAsync(dialog.FileName), "Could not open the study");
+        if (dialog.ShowDialog(this) == true) await OpenStudyAsync(dialog.FileName);
     }
+
+    Task<bool> OpenStudyAsync(string path) => TryAsync(() => viewModel.OpenStudyAsync(path), "Could not open the study");
+
+    static bool IsStudy(string path) => path.EndsWith(".json", StringComparison.OrdinalIgnoreCase);
+
+    static bool IsModel(string path) => path.EndsWith(".stl", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>The file dropped on the window, if it is one that can be opened: an STL model or a study.</summary>
+    static string? Dropped(DragEventArgs e) =>
+        e.Data.GetData(DataFormats.FileDrop) is string[] { Length: 1 } files && (IsModel(files[0]) || IsStudy(files[0])) ? files[0] : null;
+
+    void Window_DragOver(object sender, DragEventArgs e)
+    {
+        e.Effects = Dropped(e) is null ? DragDropEffects.None : DragDropEffects.Copy;
+        e.Handled = true;
+    }
+
+    async void Window_Drop(object sender, DragEventArgs e)
+    {
+        if (Dropped(e) is not { } path || viewModel.IsBusy) return;
+        if (IsStudy(path)) await OpenStudyAsync(path);
+        else Load(path);
+    }
+
+    /// <summary>
+    /// The keys: Ctrl+O and Ctrl+Shift+O open, Ctrl+S and Ctrl+Shift+S save, F5 solves, F fits the
+    /// view, Esc ends picking on the model, and Enter in a field puts what was typed into effect.
+    /// </summary>
+    void Window_KeyDown(object sender, KeyEventArgs e)
+    {
+        var ctrl = (Keyboard.Modifiers & ModifierKeys.Control) != 0;
+        var shift = (Keyboard.Modifiers & ModifierKeys.Shift) != 0;
+        // Letters typed into a field or a list are theirs.
+        var typing = Keyboard.FocusedElement is TextBox or ComboBox or ComboBoxItem or ListBoxItem or DataGridCell;
+        switch (e.Key)
+        {
+            case Key.O when ctrl && shift:
+                OpenStudy_Click(sender, e);
+                break;
+            case Key.O when ctrl:
+                OpenModel_Click(sender, e);
+                break;
+            case Key.S when ctrl && shift:
+                if (viewModel.HasModel) SaveStudyAs_Click(sender, e);
+                break;
+            case Key.S when ctrl:
+                if (viewModel.HasModel) SaveStudy_Click(sender, e);
+                break;
+            case Key.F5:
+                if (viewModel.SolveCommand.CanExecute(null)) viewModel.SolveCommand.Execute(null);
+                break;
+            case Key.Escape when viewModel.IsClicking:
+                viewModel.EndClicking();
+                break;
+            case Key.F when !typing && !ctrl:
+                if (lastFit is { } bounds) FitCamera(bounds);
+                break;
+            case Key.Enter when Keyboard.FocusedElement is TextBox { AcceptsReturn: false } field:
+                field.GetBindingExpression(TextBox.TextProperty)?.UpdateSource();
+                return; // the key may still mean something to the field
+            default:
+                return;
+        }
+        e.Handled = true;
+    }
+
+    /// <summary>The camera buttons: fit what is shown, or look at it from one of the usual sides.</summary>
+    void CameraView_Click(object sender, RoutedEventArgs e)
+    {
+        if (lastFit is not { } bounds) return;
+        var camera = viewModel.Camera;
+        var (look, up) = ((FrameworkElement)sender).Tag switch
+        {
+            "iso" => (new Vector3D(-1, 1, -0.8), new Vector3D(0, 0, 1)),
+            "top" => (new Vector3D(0, 0, -1), new Vector3D(0, 1, 0)),
+            "front" => (new Vector3D(0, 1, 0), new Vector3D(0, 0, 1)),
+            "side" => (new Vector3D(-1, 0, 0), new Vector3D(0, 0, 1)),
+            _ => (camera.LookDirection, camera.UpDirection),
+        };
+        camera.LookDirection = look;
+        FitCamera(bounds, 1, up);
+    }
+
+    /// <summary>The comparison's table grows as its top edge is dragged up.</summary>
+    void TableSizer_DragDelta(object sender, DragDeltaEventArgs e) =>
+        CompareTable.Height = Math.Clamp(CompareTable.Height - e.VerticalChange, 120, Math.Max(120, ActualHeight - 320));
 
     void SaveStudy_Click(object sender, RoutedEventArgs e)
     {
@@ -185,6 +273,7 @@ public partial class MainWindow : Window
                 }
                 await busy;
                 if (ok) ApplyView(view);
+                if (ok && options.Enum<Stage>("stage") is { } stage) viewModel.Stage = stage;
                 // A solve by hand has joined the comparison: --compare ends there.
                 if (ok && options.Has("compare") && view != ViewMode.Compare) viewModel.View = ViewMode.Compare;
                 if (ok && view == ViewMode.Model) await ClickAsync();
@@ -345,7 +434,8 @@ public partial class MainWindow : Window
     /// Keeps the current viewing direction and backs the camera off until the bounding sphere fits.
     /// Helix's ZoomExtents(Rect3D) left the camera pointing at nothing in 3.1.2, so this is done by hand.
     /// </summary>
-    void FitCamera(Box3 bounds, double zoom)
+    /// <param name="up">Z, the bed's normal, unless the camera looks straight down onto the bed.</param>
+    void FitCamera(Box3 bounds, double zoom, Vector3D? up = null)
     {
         lastFit = bounds;
         var camera = viewModel.Camera;
@@ -357,7 +447,8 @@ public partial class MainWindow : Window
         direction.Normalize();
         camera.LookDirection = direction * distance;
         camera.Position = new Point3D(center.X, center.Y, center.Z) - direction * distance;
-        camera.UpDirection = new Vector3D(0, 0, 1);
+        // Looking straight down, Z cannot be up on screen: the camera keeps the up it has.
+        camera.UpDirection = up ?? (Math.Abs(direction.Z) > 0.999 ? camera.UpDirection : new Vector3D(0, 0, 1));
         // Near enough to look at single beads, far enough for the whole bed.
         camera.NearPlaneDistance = Math.Max(0.05, radius / 200);
         camera.FarPlaneDistance = Math.Max(2000, radius * 40);
@@ -394,14 +485,4 @@ public partial class MainWindow : Window
         }
         return null;
     }
-}
-
-/// <summary>True when the bound enum value is the one named by the parameter; lets radio buttons pick an enum value.</summary>
-public sealed class EnumEqualsConverter : IValueConverter
-{
-    public object Convert(object value, Type targetType, object parameter, CultureInfo culture) =>
-        string.Equals(value?.ToString(), parameter as string, StringComparison.Ordinal);
-
-    public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture) =>
-        value is true ? Enum.Parse(targetType, (string)parameter) : Binding.DoNothing;
 }

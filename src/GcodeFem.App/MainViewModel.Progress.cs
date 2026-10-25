@@ -26,10 +26,17 @@ public sealed partial class MainViewModel
 {
     readonly DispatcherTimer workTimer = new() { Interval = TimeSpan.FromMilliseconds(200) };
     Func<WorkProgress>? work;
-    string workTitle = "";
 
     [ObservableProperty]
     public partial bool IsWorking { get; set; }
+
+    /// <summary>"Slicing", "Solving", "Sweeping": what the progress card is headed with.</summary>
+    [ObservableProperty]
+    public partial string WorkTitle { get; set; } = "";
+
+    /// <summary>The step the work is on, as it says.</summary>
+    [ObservableProperty]
+    public partial string WorkStep { get; set; } = "";
 
     /// <summary>0 to 1.</summary>
     [ObservableProperty]
@@ -45,7 +52,7 @@ public sealed partial class MainViewModel
     /// <summary>Shows <paramref name="progress"/> in the status bar until <see cref="EndWork"/>; <paramref name="title"/> leads the status text.</summary>
     void BeginWork(string title, Func<WorkProgress> progress)
     {
-        (workTitle, work) = (title, progress);
+        (WorkTitle, work) = (title, progress);
         IsWorking = true;
         ShowWork();
         workTimer.Start();
@@ -62,7 +69,8 @@ public sealed partial class MainViewModel
     {
         if (work is null) return;
         var progress = work();
-        Status = $"{workTitle}: {progress.Step}…";
+        WorkStep = progress.Step;
+        Status = $"{WorkTitle}: {progress.Step}…";
         WorkIsIndeterminate = progress.Done is null;
         WorkDone = progress.Done ?? 0;
         // The first moments of an estimate say little; the time taken is shown from the start.

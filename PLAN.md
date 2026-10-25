@@ -1184,7 +1184,7 @@ material files since M6), and solving several load cases on one matrix.
 - **Compare view**: table, side-by-side SF maps, and the weakest spot of each candidate. A
   row of the table opens that candidate's result in the views.
 - **Cache key**: hash(mesh, R, filament, presets, overrides). Reruns reuse G-code and cells.
-- **Progress**: the sweep shows in the status bar's progress bar (§12) like a single solve.
+- **Progress**: the sweep shows in the progress card (§12) like a single solve.
   Its share done is (candidates done + the current one's share) / their number, and its time
   left follows from the time per candidate so far. Each candidate's share comes from its own
   `SolveEstimate`; the slices that make up the screening tell only their time.
@@ -1262,7 +1262,9 @@ material files since M6), and solving several load cases on one matrix.
 
 ## 12. Visualisation (app)
 
-Tabs: **Model & Interfaces · Toolpaths · Cells · Results · Compare**
+Steps along the top bar: **Part & print · Mounts & loads · Print preview · Results ·
+Orientations** (the views Model, Toolpaths and Cells, Results, Compare; see "The window"
+below).
 
 - Toolpaths: colour by feature, temperature, fan, deposition time or width, with a
   layer-range slider.
@@ -1334,7 +1336,7 @@ screenshot (`--click "640,420;757,490"`), which goes through the same code as th
 Since M8 the results view also colours by safety factor and by what breaks first, marks the
 weakest spot and the weakest layer line, and probes a cell on a click (§8).
 
-**A progress bar** in the status bar shows long work while it runs, with the time taken
+**A progress bar** (since the rework, a card over the view) shows long work while it runs, with the time taken
 and, where it can tell, about how long is left. Any work hands it a function that says
 where the work stands (`WorkProgress`: step, time taken, share done, time left), read five
 times a second.
@@ -1441,6 +1443,35 @@ Measured on the 40 mm bracket ("Pull sideways"):
 Still to come: line-direction glyphs on the cells (M7 colours them by direction instead),
 cuts other than by layer, the part frame, and cancelling a running solve (a sweep can be
 stopped between its steps). The Compare tab came with M9 (§11).
+
+### The window, reworked (session 10)
+
+The window leads through the work in five steps along the top bar. Each step has a panel of
+its own on the left and the view that goes with it; the panel's main action stays at its
+foot. The look is dark and warm grey like the viewport, without a hue of its own, so that
+the colours on screen are the data's and the warnings'.
+
+| Step | View | Panel | Its action |
+| --- | --- | --- | --- |
+| Part & print | Model | the model; how it lies (a face laid on the bed, or X, Y, Z in degrees); printer, process, filament and the material it is solved with | Slice; on to the mounts |
+| Mounts & loads | Model | the faces where it is held and loaded, the one selected (a force as X, Y, Z or one push onto the face), the load cases, the solver mesh | Solve |
+| Print preview | Toolpaths or Cells | layers, time, filament, lines, cells; the slicer's warning; colouring and line types | Solve a load case |
+| Results | Results | the safety factor in the colour of its band, what breaks first and where, the breaking load and a few numbers; what to show; the passes; the full report | Solve a load case |
+| Orientations | Compare | which faces to try, how they are ranked; the table below the view | Start or stop the sweep |
+
+- **Solve slices first when it has to**: when there is no slice, or the part has been turned
+  or the process or filament changed since the last one. The preview and the results say
+  when what is on screen is no longer the part as it lies (`PrintIsStale`).
+- Over the view: the legend (top left), the camera's fit and Iso / Top / Front / Side (top
+  right), the layer range as a slider with two handles on the right edge (`LayerSlider`), the
+  probed cell (top right), what a click does while picking faces (with Done and Esc), the
+  progress card with Stop for a sweep (top middle), and how the mouse moves the view.
+- Keys: Ctrl+O / Ctrl+Shift+O open a model or a study, Ctrl+S / Ctrl+Shift+S save, F5
+  solves, F fits the view, Esc ends picking, Enter puts a typed field into effect. A model
+  or a study dropped on the window opens.
+- `Theme.xaml` styles every control the app uses; `Look` carries the icon and the hover,
+  pressed and checked colours that one button template reads. The materials window shares it.
+- The command line is as before, with `--stage` to end on a step's panel.
 
 ---
 

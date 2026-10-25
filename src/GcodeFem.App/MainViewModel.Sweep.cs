@@ -376,7 +376,7 @@ public sealed partial class MainViewModel
         if (SelectedCompareRow is not { } row || row.Job(materials) is not { } print || row.Solved() is not { } solved) return;
         (RotationX, RotationY, RotationZ) = (Math.Round(row.Rotation.X, 4), Math.Round(row.Rotation.Y, 4), Math.Round(row.Rotation.Z, 4));
         SelectedLoadCase = LoadCases.FirstOrDefault(c => string.Equals(c.Name.Trim(), solved.LoadCaseName, StringComparison.Ordinal)) ?? SelectedLoadCase;
-        ShowPrint(print);
+        ShowPrint(print, (Process, Filament));
         ShowSolution(print, solved);
         var how = row.Hand is not null ? "solved by hand" : row.Entry?.Full is not null ? "solved in full" : "as the screening left it: refined only to elements of 2³ cells, so its safety factor reads high";
         Status = $"{row.Label}: the result of '{solved.LoadCaseName}', the load case that governs it, {how}.";

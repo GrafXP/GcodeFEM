@@ -9,7 +9,7 @@ namespace GcodeFem.App;
 ///
 ///   GcodeFem.App model.stl | --study file.study.json
 ///                [--rot x,y,z] [--process name] [--filament name]
-///                [--view model|toolpaths|cells|results|compare] [--level auto|0..5]
+///                [--view model|toolpaths|cells|results|compare] [--stage setup|loads|preview|results|compare] [--level auto|0..5]
 ///                [--min-contact mm2] [--count n] [--spins] [--untick "3,4"] [--sweep] [--row n] [--open n] [--compare]
 ///                [--saved] [--case name] [--fix xmin|xmax|ymin|ymax|zmin|zmax] [--force x,y,z]
 ///                [--add fixed|sliding|bolthole|force|pressure|bearing] [--select name] [--name new-name] [--value "0,0,-20"]
@@ -32,6 +32,8 @@ namespace GcodeFem.App;
 /// leaves out rows by number and --click there ticks copies off or on; --sweep runs the sweep, --row selects a row
 /// and --open opens its result in the results view, to which the other options of a view then apply. --compare
 /// ends on the compare view, where a solve by --view results has joined the comparison.
+/// --stage shows that step's panel at the end, as a click on it in the top bar would; with --view model, loads is the
+/// panel of the mounts and loads.
 /// --saved shows the result saved beside the study (part.results.zip, as the app saves it with the study) instead of
 /// slicing and solving; the options of the results view then apply to it.
 /// --materials-window opens the materials window, on the material of that name if one is given, and --import-tds

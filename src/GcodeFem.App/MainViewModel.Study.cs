@@ -40,7 +40,8 @@ public sealed partial class InterfaceItem : ObservableObject
     public partial string Name { get; set; }
 
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(IsLoad), nameof(IsForce), nameof(IsBoltHole), nameof(KindText), nameof(Swatch), nameof(ValueLabel), nameof(ValueHint))]
+    [NotifyPropertyChangedFor(nameof(IsLoad), nameof(IsForce), nameof(IsBoltHole), nameof(KindText), nameof(Swatch), nameof(Glyph), nameof(ValueLabel), nameof(ValueHint),
+        nameof(IsVectorValue), nameof(IsScalarValue), nameof(ValueUnit))]
     public partial InterfaceKind Kind { get; set; }
 
     /// <summary>For a bolt hole: held along the hole as well.</summary>
@@ -49,12 +50,49 @@ public sealed partial class InterfaceItem : ObservableObject
 
     /// <summary>For a force: given as a push along the face's normal instead of as X, Y, Z.</summary>
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(ValueLabel), nameof(ValueHint))]
+    [NotifyPropertyChangedFor(nameof(ValueLabel), nameof(ValueHint), nameof(IsVectorValue), nameof(IsScalarValue), nameof(ValueUnit))]
     public partial bool AlongNormal { get; set; }
 
     /// <summary>The value in the load case shown, as typed.</summary>
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(ValueX), nameof(ValueY), nameof(ValueZ))]
     public partial string ValueText { get; set; } = "";
+
+    /// <summary>A force in X, Y and Z: three fields. A pressure or a push onto the face: one.</summary>
+    public bool IsVectorValue => Kind == InterfaceKind.Bearing || Kind == InterfaceKind.Force && !AlongNormal;
+
+    public bool IsScalarValue => Kind == InterfaceKind.Pressure || Kind == InterfaceKind.Force && AlongNormal;
+
+    public string ValueUnit => Kind == InterfaceKind.Pressure ? "MPa" : "N";
+
+    /// <summary>One number of a force as typed; together they make up <see cref="ValueText"/>.</summary>
+    public string ValueX
+    {
+        get => Component(0);
+        set => SetComponent(0, value);
+    }
+
+    public string ValueY
+    {
+        get => Component(1);
+        set => SetComponent(1, value);
+    }
+
+    public string ValueZ
+    {
+        get => Component(2);
+        set => SetComponent(2, value);
+    }
+
+    string Component(int n) => ValueText.Split(',') is { Length: 3 } parts ? parts[n].Trim() : "";
+
+    void SetComponent(int n, string value)
+    {
+        var parts = ValueText.Split(',') is { Length: 3 } three ? three : ["0", "0", "0"];
+        // A decimal comma, as typed on a Swiss or German keyboard, is a decimal point here.
+        parts[n] = value.Trim().Replace(',', '.');
+        ValueText = string.Join(", ", parts.Select(part => part.Trim()));
+    }
 
     /// <summary>Why <see cref="ValueText"/> could not be read; the last good value stays in force.</summary>
     [ObservableProperty]
@@ -64,6 +102,9 @@ public sealed partial class InterfaceItem : ObservableObject
     [ObservableProperty]
     public partial string FacesText { get; set; } = "No faces picked yet";
 
+    [ObservableProperty]
+    public partial bool HasFaces { get; set; }
+
     /// <summary>The model's triangles that make up the face, ascending.</summary>
     public int[] Triangles { get; private set; } = [];
 
@@ -72,6 +113,9 @@ public sealed partial class InterfaceItem : ObservableObject
     public bool IsBoltHole => Kind == InterfaceKind.BoltHole;
     public bool HasValueError => ValueError.Length > 0;
     public Brush Swatch => Swatches.Frozen(IsLoad ? InterfaceGlyphs.Load : InterfaceGlyphs.Mount);
+
+    /// <summary>The icon of the list: a lock where the part is held, an arrow where it is loaded.</summary>
+    public string Glyph => IsLoad ? "\uE72A" : "\uE72E";
 
     public string KindText => Kind switch
     {
@@ -126,6 +170,7 @@ public sealed partial class InterfaceItem : ObservableObject
     {
         Triangles = triangles;
         FacesText = FaceDescription.Of(model, triangles);
+        HasFaces = triangles.Length > 0;
     }
 
     public PartInterface ToCore() => new() { Name = Name.Trim(), Kind = Kind, Triangles = Triangles, Axial = Axial };
@@ -206,7 +251,7 @@ public sealed partial class MainViewModel
     public ObservableCollection<LoadCaseItem> LoadCases { get; } = [];
 
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(HasSelectedInterface))]
+    [NotifyPropertyChangedFor(nameof(HasSelectedInterface), nameof(ClickText))]
     [NotifyCanExecuteChangedFor(nameof(RemoveInterfaceCommand), nameof(ClearFacesCommand))]
     public partial InterfaceItem? SelectedInterface { get; set; }
 
@@ -219,6 +264,7 @@ public sealed partial class MainViewModel
 
     /// <summary>While on, a click on the model adds the face under it to the selected interface, or takes it off again.</summary>
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsClicking), nameof(ClickText))]
     public partial bool IsPicking { get; set; }
 
     /// <summary>A picked face runs on across its facets for as long as neighbours differ by less than this many degrees.</summary>
@@ -230,10 +276,10 @@ public sealed partial class MainViewModel
 
     /// <summary>The study file last opened or saved, if any.</summary>
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(Title))]
+    [NotifyPropertyChangedFor(nameof(Title), nameof(DocumentPath), nameof(DocumentName))]
     public partial string? StudyPath { get; set; }
 
-    public string Title => StudyPath is null ? "GcodeFem" : $"GcodeFem - {Path.GetFileName(StudyPath)}";
+    public string Title => StudyPath is null ? "GcodeFem" : $"{Path.GetFileName(StudyPath)} - GcodeFem";
 
     public IReadOnlyList<Choice<InterfaceKind>> Kinds { get; } =
     [
@@ -281,12 +327,13 @@ public sealed partial class MainViewModel
             return;
         }
         IsPlacing = false; // a click means one thing at a time
-        View = ViewMode.Model; // faces are picked on the model
+        Stage = Stage.Loads; // faces are picked on the model
         Status = $"Click a face of the model to add it to '{item.Name}'; click it again to take it off.";
     }
 
     /// <summary>While on, the next click on the model lays the face under it on the bed.</summary>
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsClicking), nameof(ClickText))]
     public partial bool IsPlacing { get; set; }
 
     partial void OnIsPlacingChanged(bool value)
@@ -298,7 +345,7 @@ public sealed partial class MainViewModel
             return;
         }
         IsPicking = false;
-        View = ViewMode.Model;
+        Stage = Stage.Setup;
         Status = "Click the face of the model that is to lie on the bed.";
     }
 
@@ -313,7 +360,7 @@ public sealed partial class MainViewModel
         IsPlacing = false;
         // Through double, 35.2644 would show as 35.26440048217773.
         (RotationX, RotationY, RotationZ) = (Math.Round(angles.X, 4), Math.Round(angles.Y, 4), Math.Round(angles.Z, 4));
-        Status = $"Laid that face on the bed: rotation {RotationX:0.####}, {RotationY:0.####}, {RotationZ:0.####}." + (HasPrint ? " Slice again to print it this way." : "");
+        Status = $"Laid that face on the bed: rotation {RotationX:0.####}, {RotationY:0.####}, {RotationZ:0.####}." + (HasPrint ? " The next solve slices it this way." : "");
     }
 
     // ---- interfaces ----
@@ -563,7 +610,7 @@ public sealed partial class MainViewModel
             if (!ReferenceEquals(Part, part)) return; // another model was opened meanwhile
 
             SelectedLoadCase = LoadCases.FirstOrDefault(c => string.Equals(c.Name.Trim(), solved.LoadCaseName, StringComparison.Ordinal)) ?? SelectedLoadCase;
-            ShowPrint(print);
+            ShowPrint(print, (Process, Filament));
             ShowSolution(print, solved);
             Status = $"Opened {Path.GetFileName(path)} with the result of '{solved.LoadCaseName}' saved {header.SavedAt:yyyy-MM-dd HH:mm}, as it was solved then.";
         }
@@ -610,7 +657,7 @@ public sealed partial class MainViewModel
         RemoveLoadCaseCommand.NotifyCanExecuteChanged();
         RedrawInterfaces();
 
-        if (fits) Status = $"Opened {Path.GetFileName(path)}: {Interfaces.Count} interfaces, {LoadCases.Count} load cases. Slice it to solve.";
+        if (fits) Status = $"Opened {Path.GetFileName(path)}: {Interfaces.Count} interfaces, {LoadCases.Count} load cases.";
         else
         {
             Status = "The model has changed since this study was saved: pick the faces of its interfaces again.";

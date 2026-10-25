@@ -1045,6 +1045,50 @@ esaved.study.json` |
 - `Mismatch` does not see an edited material file: the result keeps the material it was solved with,
   which the summary names.
 
+## 2026-10-25 — session 10, on the desktop
+
+- M9 and the saved results are committed as `6a06868` and pushed on **`m3-octree`**, again without
+  `materials/tds/` and without the stray `result.json` in the repository's root (a slicer's output).
+- **`main` now holds everything**: fast-forwarded from M2 to `6a06868` and pushed (Martin: "merge
+  all to main").
+- Martin then asked to "completely rework the ui, make it much more nicer and more intuitive". The
+  work was done on the branch **`ui-rework`**, made from `main`, then committed, merged into `main`
+  and pushed at the end of the session (Martin: "commit all and push", "also merge to main"), again
+  without `materials/tds/` and `result.json`.
+
+### The window reworked: done
+- Five steps along the top bar, each with its own panel and view (PLAN.md §12, "The window,
+  reworked"): Part & print, Mounts & loads, Print preview, Results, Orientations. `Stage` in
+  `MainViewModel.Stages.cs` follows the view the program picks (after a slice, a solve, from the
+  command line) and picks the view when clicked.
+- **Solve slices first** when there is no slice or the part was turned, or the process or filament
+  changed, since (`PrintIsStale`, `StaleText`); the preview and the results say so in a caution.
+- Results lead with the safety factor in its band's colour, the verdict, what breaks first and
+  where, and a few numbers (`DescribeHeadline`, `ResultFacts`); the passes and the full report are
+  in expanders. The preview shows the print's numbers (`PrintFacts`) and the slicer's warning.
+- Over the view: the legend top left, camera buttons top right (fit, Iso, Top, Front, Side), the
+  layer range as a two-handled slider on the right edge (`LayerSlider`), the probed cell top right
+  (with a close button), a banner while faces are picked (Done, Esc), a progress card with Stop for
+  the sweep, the mouse's gestures at the bottom, and an empty state with no part open.
+- A force is typed as X, Y, Z in three fields (`InterfaceItem.ValueX/Y/Z`, which make up
+  `ValueText`; a decimal comma counts as a point); a pressure or a push onto the face in one.
+- Keys: Ctrl+O, Ctrl+Shift+O, Ctrl+S, Ctrl+Shift+S, F5 solves, F fits, Esc ends picking, Enter puts a
+  field into effect. A model or study dropped on the window opens. Dark title bars (DWM).
+- `Theme.xaml` (merged in `App.xaml`) styles every control; `Look` holds the attached icon and
+  hover / pressed / checked brushes; `Converters.cs` holds the converters. The materials window
+  uses the theme too.
+- The app's command line is unchanged, plus `--stage setup|loads|preview|results|compare`.
+- Core and the tests are untouched; the solution builds without warnings. The test suite was not run
+  again (nothing it covers changed).
+- Checked by screenshots (`--screenshot`) of each step on the bracket: the setup, picking a new load
+  (`--add force`), the toolpath preview cut at layer 30, the results flat (SF 1.58, amber) and on edge
+  (0.87, red), a solve in progress (`--busy-screenshot`), a probe on the lines, the compare view, a
+  sweep in progress and row 6 opened (SF 1.05, no stale caution), the materials window, and no part
+  open. The combo box's drop-down, the expander, check boxes, slider, progress bar and a tooltip were
+  checked in a throwaway harness that captured the screen.
+- Not checked by hand: dragging the layer slider and the table's edge, the camera buttons, the keys,
+  dropping a file, and the text fields' right-click menu (it would not open from the harness).
+
 ## Next
 - The native solver's crash (above), now that a sweep runs dozens of solves. None was seen in this
   session's sweeps (about 100 solves).

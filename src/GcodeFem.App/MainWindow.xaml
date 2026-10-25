@@ -3,477 +3,928 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:hx="http://helix-toolkit.org/wpf/SharpDX"
         xmlns:local="clr-namespace:GcodeFem.App"
-        Title="{Binding Title}" Width="1400" Height="900">
+        Title="{Binding Title}" Width="1440" Height="900" MinWidth="1080" MinHeight="640"
+        Background="{StaticResource WindowBrush}" Foreground="{StaticResource TextBrush}"
+        FontFamily="{StaticResource UiFont}" FontSize="13" UseLayoutRounding="True" TextOptions.TextFormattingMode="Display"
+        AllowDrop="True" PreviewDragOver="Window_DragOver" Drop="Window_Drop" PreviewKeyDown="Window_KeyDown">
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="Visible" />
         <local:EnumEqualsConverter x:Key="Is" />
-        <Style x:Key="Label" TargetType="TextBlock">
-            <Setter Property="VerticalAlignment" Value="Center" />
-        </Style>
-        <Style x:Key="Field" TargetType="FrameworkElement">
-            <Setter Property="Margin" Value="0,3" />
-        </Style>
-        <Style x:Key="Hint" TargetType="TextBlock">
-            <Setter Property="Foreground" Value="#FF52514E" />
-            <Setter Property="TextWrapping" Value="Wrap" />
-            <Setter Property="Margin" Value="0,2,0,0" />
-        </Style>
-        <Style x:Key="Tab" TargetType="RadioButton" BasedOn="{StaticResource {x:Type ToggleButton}}">
-            <Setter Property="Padding" Value="14,5" />
-            <Setter Property="Margin" Value="0,0,4,0" />
-        </Style>
+        <local:EnumVisibleConverter x:Key="IsVisible" />
+        <local:ShownConverter x:Key="Shown" />
+
         <!-- A line type of the toolpath, with its colour; unticked, its lines are not drawn. -->
         <DataTemplate x:Key="LineTypeToggle">
-            <CheckBox IsChecked="{Binding IsShown}" Margin="0,2">
+            <CheckBox IsChecked="{Binding IsShown}" Margin="0,3">
                 <StackPanel Orientation="Horizontal">
-                    <Rectangle Width="12" Height="12" RadiusX="2" RadiusY="2" Fill="{Binding Swatch}" VerticalAlignment="Center" />
-                    <TextBlock Text="{Binding Label}" Margin="6,0,0,0" />
+                    <Rectangle Width="12" Height="12" RadiusX="3" RadiusY="3" Fill="{Binding Swatch}" VerticalAlignment="Center" />
+                    <TextBlock Text="{Binding Label}" Margin="8,0,0,0" />
                 </StackPanel>
             </CheckBox>
         </DataTemplate>
+
+        <!-- A number with its name beside it. -->
+        <DataTemplate x:Key="FactRow">
+            <DockPanel Margin="0,4">
+                <TextBlock DockPanel.Dock="Left" Text="{Binding Label}" Foreground="{StaticResource TextMutedBrush}" Width="132" />
+                <TextBlock Text="{Binding Value}" TextWrapping="Wrap" />
+            </DockPanel>
+        </DataTemplate>
+
+        <!-- A number with its name above it, in a grid of two. -->
+        <DataTemplate x:Key="FactTile">
+            <StackPanel Margin="0,2,8,10">
+                <TextBlock Text="{Binding Label}" Foreground="{StaticResource TextMutedBrush}" FontSize="12" />
+                <TextBlock Text="{Binding Value}" FontSize="16" FontWeight="SemiBold" Margin="0,2,0,0" TextTrimming="CharacterEllipsis" />
+            </StackPanel>
+        </DataTemplate>
+
+        <Style x:Key="StepArrow" TargetType="TextBlock" BasedOn="{StaticResource Icon}">
+            <Setter Property="Text" Value="&#xE76C;" />
+            <Setter Property="FontSize" Value="9" />
+            <Setter Property="Foreground" Value="{StaticResource TextMutedBrush}" />
+            <Setter Property="Opacity" Value="0.6" />
+            <Setter Property="Margin" Value="2,0" />
+        </Style>
+
+        <Style x:Key="ViewButton" TargetType="Button" BasedOn="{StaticResource GhostButton}">
+            <Setter Property="Padding" Value="9,5" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="local:Look.CornerRadius" Value="6" />
+        </Style>
     </Window.Resources>
 
-    <DockPanel Background="{DynamicResource {x:Static SystemColors.WindowBrushKey}}">
-        <StatusBar DockPanel.Dock="Bottom">
-            <!-- While a slice or a solve runs: how far it has come, how long it has taken and about how long it will still take. -->
-            <StatusBarItem Visibility="{Binding IsWorking, Converter={StaticResource Visible}}">
-                <StackPanel Orientation="Horizontal">
-                    <ProgressBar Width="220" Height="14" Minimum="0" Maximum="1" Value="{Binding WorkDone, Mode=OneWay}"
-                                 IsIndeterminate="{Binding WorkIsIndeterminate}" VerticalAlignment="Center" />
-                    <TextBlock Text="{Binding WorkTime}" Margin="8,0,4,0" MinWidth="150" VerticalAlignment="Center" />
+    <!-- The window's own background is not part of its content, which a screenshot is of. -->
+    <Grid Background="{StaticResource WindowBrush}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- ===== The top bar: the app and its document, the steps of the work, the files ===== -->
+        <Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource DividerBrush}" BorderThickness="0,0,0,1">
+            <Grid Height="56">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Orientation="Horizontal" Margin="18,0,20,0" VerticalAlignment="Center">
+                    <!-- Layers on a bed. -->
+                    <Border Width="30" Height="30" CornerRadius="8" Background="{StaticResource PrimaryBrush}">
+                        <Canvas Width="16" Height="14">
+                            <Rectangle Canvas.Left="3" Canvas.Top="0" Width="10" Height="3" RadiusX="1.5" RadiusY="1.5" Fill="{StaticResource PrimaryTextBrush}" />
+                            <Rectangle Canvas.Left="1.5" Canvas.Top="5" Width="13" Height="3" RadiusX="1.5" RadiusY="1.5" Fill="{StaticResource PrimaryTextBrush}" />
+                            <Rectangle Canvas.Left="0" Canvas.Top="10" Width="16" Height="3" RadiusX="1.5" RadiusY="1.5" Fill="{StaticResource PrimaryTextBrush}" />
+                        </Canvas>
+                    </Border>
+                    <StackPanel Margin="11,0,0,0" VerticalAlignment="Center">
+                        <TextBlock Text="GcodeFem" FontWeight="SemiBold" FontSize="14" />
+                        <TextBlock Text="{Binding DocumentName}" FontSize="11.5" Foreground="{StaticResource TextMutedBrush}" TextTrimming="CharacterEllipsis" MaxWidth="210"
+                                   ToolTip="{Binding DocumentPath}" />
+                    </StackPanel>
                 </StackPanel>
-            </StatusBarItem>
-            <StatusBarItem>
-                <TextBlock Text="{Binding Status}" />
-            </StatusBarItem>
-            <StatusBarItem HorizontalAlignment="Right">
-                <TextBlock Text="{Binding Caption}" Foreground="#FF52514E" />
-            </StatusBarItem>
-        </StatusBar>
 
-        <ScrollViewer DockPanel.Dock="Left" Width="330" VerticalScrollBarVisibility="Auto">
-            <StackPanel Margin="10">
-                <WrapPanel>
-                    <Button Content="Open model…" Click="OpenModel_Click" Padding="10,4" Margin="0,0,4,4" />
-                    <Button Content="Open study…" Click="OpenStudy_Click" Padding="10,4" Margin="0,0,4,4"
-                            ToolTip="A study is a model with how it is printed, its mounts and loads, and its load cases" />
-                    <Button Content="Save study" Click="SaveStudy_Click" Padding="10,4" Margin="0,0,4,4" />
-                    <Button Content="Save as…" Click="SaveStudyAs_Click" Padding="10,4" Margin="0,0,0,4" />
-                </WrapPanel>
-                <TextBlock Text="{Binding ModelName}" Style="{StaticResource Hint}" />
+                <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Center">
+                    <RadioButton Style="{StaticResource Step}" Tag="1" Content="Part &amp; print" IsEnabled="{Binding HasModel}"
+                                 IsChecked="{Binding Stage, Converter={StaticResource Is}, ConverterParameter=Setup}"
+                                 ToolTip="How the part lies on the bed, the process and the filament" />
+                    <TextBlock Style="{StaticResource StepArrow}" />
+                    <RadioButton Style="{StaticResource Step}" Tag="2" Content="Mounts &amp; loads" IsEnabled="{Binding HasModel}"
+                                 IsChecked="{Binding Stage, Converter={StaticResource Is}, ConverterParameter=Loads}"
+                                 ToolTip="The faces where the part is held and where it is loaded, and the load cases" />
+                    <TextBlock Style="{StaticResource StepArrow}" />
+                    <RadioButton Style="{StaticResource Step}" Tag="3" Content="Print preview" IsEnabled="{Binding HasPrint}"
+                                 IsChecked="{Binding Stage, Converter={StaticResource Is}, ConverterParameter=Preview}"
+                                 ToolTip="The toolpath and the bead cells, once the part has been sliced" />
+                    <TextBlock Style="{StaticResource StepArrow}" />
+                    <RadioButton Style="{StaticResource Step}" Tag="4" Content="Results" IsEnabled="{Binding HasResult}"
+                                 IsChecked="{Binding Stage, Converter={StaticResource Is}, ConverterParameter=Results}"
+                                 ToolTip="Where and how the part breaks first, once it has been solved" />
+                    <TextBlock Style="{StaticResource StepArrow}" />
+                    <RadioButton Style="{StaticResource Step}" Tag="5" Content="Orientations" IsEnabled="{Binding HasModel}"
+                                 IsChecked="{Binding Stage, Converter={StaticResource Is}, ConverterParameter=Compare}"
+                                 ToolTip="The faces the part can lie on, side by side, and what each came to: the sweep's and those solved by hand" />
+                </StackPanel>
 
-                <GroupBox Header="Print" Margin="0,8,0,0" Padding="6,4">
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="62" />
-                            <ColumnDefinition />
-                        </Grid.ColumnDefinitions>
-                        <Grid.RowDefinitions>
-                            <RowDefinition />
-                            <RowDefinition />
-                            <RowDefinition />
-                            <RowDefinition />
-                            <RowDefinition />
-                            <RowDefinition />
-                            <RowDefinition />
-                        </Grid.RowDefinitions>
-                        <TextBlock Text="Lies on" Style="{StaticResource Label}" />
-                        <ToggleButton Grid.Column="1" Content="Lay a face on the bed" IsChecked="{Binding IsPlacing}" Padding="8,3" Style="{StaticResource Field}"
-                                      ToolTip="Then click the face of the model that is to lie on the bed. The model turns the shortest way to get it there, and its mounts and loads turn with it." />
-                        <TextBlock Grid.Row="1" Text="Rotation" Style="{StaticResource Label}" ToolTip="Degrees about X, then Y, then Z" />
-                        <UniformGrid Grid.Row="1" Grid.Column="1" Columns="3" Style="{StaticResource Field}" ToolTip="Degrees about X, then Y, then Z. Laying a face on the bed sets them; they can also be typed.">
-                            <TextBox Text="{Binding RotationX}" Margin="0,0,4,0" />
-                            <TextBox Text="{Binding RotationY}" Margin="0,0,4,0" />
-                            <TextBox Text="{Binding RotationZ}" />
-                        </UniformGrid>
-                        <TextBlock Grid.Row="2" Text="Printer" Style="{StaticResource Label}" />
-                        <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding Printer}" TextWrapping="Wrap" Style="{StaticResource Field}" />
-                        <TextBlock Grid.Row="3" Text="Process" Style="{StaticResource Label}" />
-                        <ComboBox Grid.Row="3" Grid.Column="1" ItemsSource="{Binding Processes}" SelectedItem="{Binding Process}" Style="{StaticResource Field}" />
-                        <TextBlock Grid.Row="4" Text="Filament" Style="{StaticResource Label}" />
-                        <ComboBox Grid.Row="4" Grid.Column="1" ItemsSource="{Binding Filaments}" SelectedItem="{Binding Filament}" Style="{StaticResource Field}" />
-                        <TextBlock Grid.Row="5" Text="Material" VerticalAlignment="Top" Margin="0,5,0,0" />
-                        <StackPanel Grid.Row="5" Grid.Column="1" Style="{StaticResource Field}">
-                            <!-- What the filament is solved with. A material that is not the filament's own is said so, in the colour of a caution. -->
-                            <TextBlock Text="{Binding MaterialText}" TextWrapping="Wrap" Margin="0,2,0,0">
-                                <TextBlock.Style>
-                                    <Style TargetType="TextBlock">
-                                        <Style.Triggers>
-                                            <DataTrigger Binding="{Binding MaterialIsStandIn}" Value="True">
-                                                <Setter Property="Foreground" Value="#FF8A5300" />
-                                            </DataTrigger>
-                                        </Style.Triggers>
-                                    </Style>
-                                </TextBlock.Style>
-                            </TextBlock>
-                            <Button Content="Materials…" Click="Materials_Click" Padding="8,3" Margin="0,4,0,0" HorizontalAlignment="Left"
-                                    ToolTip="The material of every filament, each number with its source; and new materials from technical data sheets" />
-                        </StackPanel>
-                        <Button Grid.Row="6" Grid.Column="1" Content="Slice" Command="{Binding SliceCommand}" Padding="10,4" Margin="0,6,0,2" HorizontalAlignment="Left" />
-                    </Grid>
-                </GroupBox>
+                <StackPanel Grid.Column="2" Orientation="Horizontal" Margin="0,0,14,0" VerticalAlignment="Center">
+                    <Button Style="{StaticResource GhostButton}" local:Look.Icon="&#xE8E5;" Content="Open model" Click="OpenModel_Click"
+                            ToolTip="Open an STL model (Ctrl+O). Dropping one on the window does the same." />
+                    <Button Style="{StaticResource GhostButton}" local:Look.Icon="&#xE838;" Content="Open study" Click="OpenStudy_Click"
+                            ToolTip="Open a study (Ctrl+Shift+O): a model with how it is printed, its mounts and loads, and its load cases, and the result saved beside it" />
+                    <Button Style="{StaticResource GhostButton}" local:Look.Icon="&#xE74E;" Content="Save" Click="SaveStudy_Click" IsEnabled="{Binding HasModel}"
+                            ToolTip="Save the study (Ctrl+S), and the result on screen beside it" />
+                    <Button Style="{StaticResource IconButton}" local:Look.Icon="&#xE792;" Click="SaveStudyAs_Click" IsEnabled="{Binding HasModel}"
+                            ToolTip="Save the study as… (Ctrl+Shift+S)" />
+                    <Border Width="1" Height="22" Background="{StaticResource DividerBrush}" Margin="8,0" />
+                    <Button Style="{StaticResource GhostButton}" local:Look.Icon="&#xE8F1;" Content="Materials" Click="Materials_Click"
+                            ToolTip="The material of every filament, each number with its source; and new materials from technical data sheets" />
+                </StackPanel>
+            </Grid>
+        </Border>
 
-                <GroupBox Header="Mounts and loads" Margin="0,8,0,0" Padding="6,4">
-                    <StackPanel>
-                        <!-- The interfaces: faces of the model where it is held or loaded. -->
-                        <ListBox ItemsSource="{Binding Interfaces}" SelectedItem="{Binding SelectedInterface}" MinHeight="40" MaxHeight="170"
-                                 HorizontalContentAlignment="Stretch" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
-                            <ListBox.ItemTemplate>
-                                <DataTemplate>
-                                    <DockPanel Margin="0,2">
-                                        <Rectangle DockPanel.Dock="Left" Width="12" Height="12" RadiusX="2" RadiusY="2" Fill="{Binding Swatch}" VerticalAlignment="Top" Margin="0,3,8,0" />
-                                        <StackPanel>
-                                            <TextBlock TextTrimming="CharacterEllipsis">
-                                                <Run Text="{Binding Name, Mode=OneWay}" FontWeight="SemiBold" /><Run Text=": " /><Run Text="{Binding KindText, Mode=OneWay}" />
-                                            </TextBlock>
-                                            <TextBlock Text="{Binding FacesText}" Foreground="#FF52514E" TextWrapping="Wrap" />
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="376" />
+                <ColumnDefinition />
+            </Grid.ColumnDefinitions>
+
+            <!-- ===== The panel of the step on screen; its main action stays at the bottom ===== -->
+            <Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource DividerBrush}" BorderThickness="0,0,1,0">
+                <DockPanel>
+                    <Border DockPanel.Dock="Bottom" BorderBrush="{StaticResource DividerBrush}" BorderThickness="0,1,0,0" Padding="20,14,20,16">
+                        <Grid>
+                            <!-- Part & print: on to the mounts, or a look at the print first. -->
+                            <Grid Visibility="{Binding Stage, Converter={StaticResource IsVisible}, ConverterParameter=Setup}">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition />
+                                </Grid.ColumnDefinitions>
+                                <Button Content="Slice" Command="{Binding SliceCommand}" Padding="16,8" Margin="0,0,8,0"
+                                        ToolTip="Slice it in Bambu Studio now and look at the toolpath. A solve slices by itself when it has to." />
+                                <Button Grid.Column="1" Style="{StaticResource PrimaryButton}" Content="Next: mounts &amp; loads" IsEnabled="{Binding HasModel}"
+                                        Command="{Binding GoToCommand}" CommandParameter="{x:Static local:Stage.Loads}" />
+                            </Grid>
+
+                            <!-- Mounts & loads: solve the load case shown above. -->
+                            <StackPanel Visibility="{Binding Stage, Converter={StaticResource IsVisible}, ConverterParameter=Loads}">
+                                <Button Style="{StaticResource PrimaryButton}" local:Look.Icon="&#xE768;" Content="Solve" Command="{Binding SolveCommand}"
+                                        ToolTip="Solves the load case shown (F5). Slices first if there is no slice of the part as it lies now." />
+                                <TextBlock Style="{StaticResource Hint}" TextAlignment="Center" Margin="0,7,0,0">
+                                    <Run Text="Load case" /> <Run Text="{Binding SelectedLoadCase.Name, Mode=OneWay}" Foreground="{StaticResource TextSecondaryBrush}" /><Run Text="; it slices first if it has to." />
+                                </TextBlock>
+                            </StackPanel>
+
+                            <!-- Preview and results: solve a load case, again or another. -->
+                            <StackPanel Visibility="{Binding Stage, Converter={StaticResource IsVisible}, ConverterParameter='Preview,Results'}">
+                                <DockPanel>
+                                    <TextBlock Text="Load case" Foreground="{StaticResource TextMutedBrush}" VerticalAlignment="Center" Margin="0,0,12,0" />
+                                    <ComboBox ItemsSource="{Binding LoadCases}" DisplayMemberPath="Name" SelectedItem="{Binding SelectedLoadCase}" />
+                                </DockPanel>
+                                <Button Style="{StaticResource PrimaryButton}" local:Look.Icon="&#xE768;" Content="Solve" Command="{Binding SolveCommand}" Margin="0,10,0,0"
+                                        ToolTip="Solves the load case chosen above (F5). Slices first if there is no slice of the part as it lies now." />
+                            </StackPanel>
+
+                            <!-- Orientations: the sweep. -->
+                            <Grid Visibility="{Binding Stage, Converter={StaticResource IsVisible}, ConverterParameter=Compare}">
+                                <Button Style="{StaticResource PrimaryButton}" local:Look.Icon="&#xE768;" Content="Start the sweep" Command="{Binding StartSweepCommand}"
+                                        Visibility="{Binding IsSweeping, Converter={StaticResource Shown}, ConverterParameter=Not}"
+                                        ToolTip="Slices each ticked orientation and solves it quickly in every load case, then solves the best 3 in full and ranks them all" />
+                                <Button local:Look.Icon="&#xE71A;" Content="Stop the sweep" Command="{Binding CancelSweepCommand}" Padding="16,8"
+                                        Visibility="{Binding IsSweeping, Converter={StaticResource Visible}}"
+                                        ToolTip="Stops after the step at hand; what is done stays in the table" />
+                            </Grid>
+                        </Grid>
+                    </Border>
+
+                    <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="20,20,16,8">
+                        <Grid>
+                            <!-- ===== 1 Part & print ===== -->
+                            <StackPanel Visibility="{Binding Stage, Converter={StaticResource IsVisible}, ConverterParameter=Setup}">
+                                <TextBlock Text="Part &amp; print" Style="{StaticResource PageTitle}" />
+                                <TextBlock Style="{StaticResource Hint}" Margin="0,4,0,16" Text="Lay the part on the bed the way it is to be printed, and choose how it is printed." />
+
+                                <Border Style="{StaticResource Card}" Visibility="{Binding HasModel, Converter={StaticResource Shown}, ConverterParameter=Not}">
+                                    <StackPanel>
+                                        <TextBlock Text="No part open" Style="{StaticResource CardTitle}" Margin="0,0,0,4" />
+                                        <TextBlock Style="{StaticResource Hint}" Text="Open an STL model, or a study saved before." />
+                                        <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                                            <Button Style="{StaticResource PrimaryButton}" Content="Open model" Click="OpenModel_Click" Padding="14,7" />
+                                            <Button Content="Open study" Click="OpenStudy_Click" Padding="14,7" Margin="8,0,0,0" />
+                                        </StackPanel>
+                                    </StackPanel>
+                                </Border>
+
+                                <Border Style="{StaticResource Card}" Visibility="{Binding HasModel, Converter={StaticResource Visible}}">
+                                    <DockPanel>
+                                        <Border DockPanel.Dock="Left" Width="40" Height="40" CornerRadius="9" Background="{StaticResource ControlBrush}" Margin="0,0,12,0">
+                                            <TextBlock Text="&#xE8A5;" Style="{StaticResource Icon}" FontSize="17" HorizontalAlignment="Center" Foreground="{StaticResource TextSecondaryBrush}" />
+                                        </Border>
+                                        <StackPanel VerticalAlignment="Center">
+                                            <TextBlock Text="{Binding ModelFile}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" ToolTip="{Binding ModelPath}" />
+                                            <TextBlock Text="{Binding ModelSize}" Style="{StaticResource Hint}" Margin="0,2,0,0" />
                                         </StackPanel>
                                     </DockPanel>
-                                </DataTemplate>
-                            </ListBox.ItemTemplate>
-                        </ListBox>
-                        <WrapPanel Margin="0,6,0,0">
-                            <Button Content="Add mount" Command="{Binding AddMountCommand}" Padding="8,3" Margin="0,0,4,0" ToolTip="A face where the part is held" />
-                            <Button Content="Add load" Command="{Binding AddLoadCommand}" Padding="8,3" Margin="0,0,4,0" ToolTip="A face where something pushes or pulls on the part" />
-                            <Button Content="Remove" Command="{Binding RemoveInterfaceCommand}" Padding="8,3" />
-                        </WrapPanel>
+                                </Border>
 
-                        <!-- The selected interface. -->
-                        <StackPanel Margin="0,10,0,0" Visibility="{Binding HasSelectedInterface, Converter={StaticResource Visible}}">
-                            <DockPanel Style="{StaticResource Field}">
-                                <TextBlock Text="Name" Width="62" VerticalAlignment="Center" />
-                                <TextBox Text="{Binding SelectedInterface.Name, UpdateSourceTrigger=PropertyChanged}" />
-                            </DockPanel>
-                            <DockPanel Style="{StaticResource Field}">
-                                <TextBlock Text="It is a" Width="62" VerticalAlignment="Center" />
-                                <ComboBox ItemsSource="{Binding Kinds}" DisplayMemberPath="Label" SelectedValuePath="Value" SelectedValue="{Binding SelectedInterface.Kind}" />
-                            </DockPanel>
-                            <DockPanel Style="{StaticResource Field}">
-                                <TextBlock Text="Faces" Width="62" VerticalAlignment="Center" />
-                                <Button DockPanel.Dock="Right" Content="Clear" Command="{Binding ClearFacesCommand}" Padding="8,3" Margin="4,0,0,0" />
-                                <ToggleButton Content="Pick on the model" IsChecked="{Binding IsPicking}" Padding="8,3"
-                                              ToolTip="While this is on, a click on the model adds the face under it; a click on a face that is already picked takes it off" />
-                            </DockPanel>
-                            <DockPanel Style="{StaticResource Field}"
-                                       ToolTip="A click picks the facet under it and its neighbours for as long as they differ by less than this: a flat face up to its edges, a hole's wall all the way round. Lower it to keep a flat face from running on into a rounded edge.">
-                                <TextBlock Text="A face runs on across edges of up to" VerticalAlignment="Center" />
-                                <TextBlock DockPanel.Dock="Right" Text="°" VerticalAlignment="Center" Margin="3,0,0,0" />
-                                <TextBox Text="{Binding PickAngle}" Margin="6,0,0,0" />
-                            </DockPanel>
-                            <DockPanel Style="{StaticResource Field}" Visibility="{Binding SelectedInterface.IsLoad, Converter={StaticResource Visible}, FallbackValue=Collapsed}"
-                                       ToolTip="{Binding SelectedInterface.ValueHint}">
-                                <TextBlock Text="{Binding SelectedInterface.ValueLabel}" Width="62" VerticalAlignment="Center" />
-                                <TextBox Text="{Binding SelectedInterface.ValueText, UpdateSourceTrigger=PropertyChanged}" />
-                            </DockPanel>
-                            <TextBlock Text="{Binding SelectedInterface.ValueError}" Foreground="#FFB3261E" TextWrapping="Wrap"
-                                       Visibility="{Binding SelectedInterface.HasValueError, Converter={StaticResource Visible}, FallbackValue=Collapsed}" />
-                            <CheckBox Content="Along the face's normal" IsChecked="{Binding SelectedInterface.AlongNormal}" Margin="62,3,0,3"
-                                      Visibility="{Binding SelectedInterface.IsForce, Converter={StaticResource Visible}, FallbackValue=Collapsed}"
-                                      ToolTip="The force is one number: how hard it pushes onto the face, square to it. Unticked, it is given as X, Y, Z." />
-                            <CheckBox Content="Also held along the hole" IsChecked="{Binding SelectedInterface.Axial}" Margin="62,3,0,3"
-                                      Visibility="{Binding SelectedInterface.IsBoltHole, Converter={StaticResource Visible}, FallbackValue=Collapsed}"
-                                      ToolTip="Ticked: a bolt done up tight. Unticked: a pin, which holds across the hole only, so the part can slide along it." />
-                        </StackPanel>
-
-                        <Separator Margin="0,8" />
-                        <DockPanel Style="{StaticResource Field}" ToolTip="The mounts are the same in every load case; each load has a value per load case">
-                            <TextBlock Text="Load case" Width="62" VerticalAlignment="Center" />
-                            <Button DockPanel.Dock="Right" Content="−" Command="{Binding RemoveLoadCaseCommand}" Width="24" Margin="4,0,0,0" ToolTip="Remove this load case" />
-                            <Button DockPanel.Dock="Right" Content="+" Command="{Binding AddLoadCaseCommand}" Width="24" Margin="4,0,0,0"
-                                    ToolTip="Add a load case that starts with this one's values" />
-                            <ComboBox ItemsSource="{Binding LoadCases}" DisplayMemberPath="Name" SelectedItem="{Binding SelectedLoadCase}" />
-                        </DockPanel>
-                        <DockPanel Style="{StaticResource Field}">
-                            <TextBlock Text="Its name" Width="62" VerticalAlignment="Center" />
-                            <TextBox Text="{Binding SelectedLoadCase.Name, UpdateSourceTrigger=PropertyChanged}" />
-                        </DockPanel>
-                        <DockPanel Style="{StaticResource Field}">
-                            <TextBlock Text="Mesh" Width="62" VerticalAlignment="Center" />
-                            <ComboBox ItemsSource="{Binding Levels}" DisplayMemberPath="Label" SelectedItem="{Binding Level}" />
-                        </DockPanel>
-                        <Button Content="Solve" Command="{Binding SolveCommand}" Padding="10,4" Margin="62,6,0,2" HorizontalAlignment="Left"
-                                ToolTip="Solves the load case shown, on the last slice" />
-                    </StackPanel>
-                </GroupBox>
-
-                <GroupBox Header="Orientation sweep" Margin="0,8,0,0" Padding="6,4" Visibility="{Binding HasModel, Converter={StaticResource Visible}}">
-                    <StackPanel>
-                        <!-- Which faces the sweep tries; both numbers are saved with the study, and neither has a built-in value. -->
-                        <DockPanel Style="{StaticResource Field}" ToolTip="A face that touches the bed with less than this is not tried. There is no built-in value: until one is typed, every face with contact is shown and the sweep does not start.">
-                            <TextBlock Text="Smallest contact" Width="110" VerticalAlignment="Center" />
-                            <TextBlock DockPanel.Dock="Right" Text="mm²" VerticalAlignment="Center" Margin="4,0,0,0" />
-                            <TextBox Text="{Binding MinContactText, UpdateSourceTrigger=PropertyChanged}" />
-                        </DockPanel>
-                        <DockPanel Style="{StaticResource Field}" ToolTip="Of the faces left, the largest this many are tried. Empty: all of them.">
-                            <TextBlock Text="How many, largest" Width="110" VerticalAlignment="Center" />
-                            <TextBox Text="{Binding CountText, UpdateSourceTrigger=PropertyChanged}" />
-                        </DockPanel>
-                        <CheckBox Content="Also spun on the bed by 45° and 90°" IsChecked="{Binding Spins}" Margin="0,3"
-                                  ToolTip="The walls follow the part, but the sparse infill and the top and bottom skins follow the bed's axes." />
-                        <TextBlock Text="{Binding SweepText}" Style="{StaticResource Hint}" />
-                        <WrapPanel Margin="0,6,0,0">
-                            <Button Content="Show the faces" Command="{Binding PreviewFacesCommand}" Padding="8,3" Margin="0,0,4,4"
-                                    ToolTip="Lists the faces as the part lies now and shows the part laid on each, side by side. Tick off those not to try, in the table or by a click on the copy." />
-                            <Button Content="Start the sweep" Command="{Binding StartSweepCommand}" Padding="8,3" Margin="0,0,4,4"
-                                    ToolTip="Slices each ticked orientation and solves it quickly in every load case, then solves the best 3 in full and ranks them all" />
-                            <Button Content="Stop" Command="{Binding CancelSweepCommand}" Padding="8,3" Margin="0,0,0,4" ToolTip="Stops after the step at hand; what is done stays in the table" />
-                        </WrapPanel>
-                    </StackPanel>
-                </GroupBox>
-
-                <GroupBox Header="Layers" Margin="0,8,0,0" Padding="6,4" Visibility="{Binding HasLayers, Converter={StaticResource Visible}}">
-                    <StackPanel>
-                        <TextBlock Text="{Binding LayerText}" TextWrapping="Wrap" />
-                        <Slider Minimum="1" Maximum="{Binding LayerCount}" Value="{Binding LayerHigh}" IsSnapToTickEnabled="True" TickFrequency="1"
-                                SmallChange="1" LargeChange="10" Margin="0,6,0,0" ToolTip="Last layer shown" />
-                        <Slider Minimum="1" Maximum="{Binding LayerCount}" Value="{Binding LayerLow}" IsSnapToTickEnabled="True" TickFrequency="1"
-                                SmallChange="1" LargeChange="10" Margin="0,4,0,0" ToolTip="First layer shown" />
-                    </StackPanel>
-                </GroupBox>
-
-                <GroupBox Header="Toolpaths" Margin="0,8,0,0" Padding="6,4" Visibility="{Binding IsToolpathView, Converter={StaticResource Visible}}">
-                    <StackPanel>
-                        <DockPanel>
-                            <TextBlock Text="Colour by" VerticalAlignment="Center" Width="62" />
-                            <ComboBox ItemsSource="{Binding Colourings}" DisplayMemberPath="Label" SelectedValuePath="Value" SelectedValue="{Binding Colouring}" />
-                        </DockPanel>
-                        <ItemsControl ItemsSource="{Binding LineTypes}" ItemTemplate="{StaticResource LineTypeToggle}" Margin="0,6,0,0" />
-                        <CheckBox Content="Thin lines instead of full beads" IsChecked="{Binding ThinLines}" Margin="0,8,0,2"
-                                  ToolTip="Much less to draw: for big parts on a weak graphics card" />
-                    </StackPanel>
-                </GroupBox>
-
-                <GroupBox Header="Cells" Margin="0,8,0,0" Padding="6,4" Visibility="{Binding IsCellView, Converter={StaticResource Visible}}">
-                    <DockPanel>
-                        <TextBlock Text="Colour by" VerticalAlignment="Center" Width="62" />
-                        <ComboBox ItemsSource="{Binding CellColourings}" DisplayMemberPath="Label" SelectedValuePath="Value" SelectedValue="{Binding CellColouring}" />
-                    </DockPanel>
-                </GroupBox>
-
-                <GroupBox Header="Result" Margin="0,8,0,0" Padding="6,4" Visibility="{Binding IsResultView, Converter={StaticResource Visible}}">
-                    <StackPanel>
-                        <DockPanel>
-                            <TextBlock Text="Colour by" VerticalAlignment="Center" Width="62" />
-                            <ComboBox ItemsSource="{Binding Quantities}" DisplayMemberPath="Label" SelectedValuePath="Value" SelectedValue="{Binding Quantity}" />
-                        </DockPanel>
-                        <DockPanel Style="{StaticResource Field}"
-                                   ToolTip="On the print lines, each piece of a line takes the result of the cell it runs through: which wall line breaks first, which infill lines carry the load">
-                            <TextBlock Text="Draw on" VerticalAlignment="Center" Width="62" />
-                            <ComboBox ItemsSource="{Binding Drawings}" DisplayMemberPath="Label" SelectedValuePath="Value" SelectedValue="{Binding Drawing}" />
-                        </DockPanel>
-                        <StackPanel Visibility="{Binding IsResultOnLines, Converter={StaticResource Visible}}">
-                            <ItemsControl ItemsSource="{Binding LineTypes}" ItemTemplate="{StaticResource LineTypeToggle}" Margin="0,4,0,0"
-                                          ToolTip="Untick a line type to see the lines behind it: with the sparse infill off, the walls" />
-                            <CheckBox Content="Thin lines instead of full beads" IsChecked="{Binding ThinLines}" Margin="0,6,0,2"
-                                      ToolTip="Much less to draw: for big parts on a weak graphics card" />
-                        </StackPanel>
-                        <TextBlock Text="{Binding ScaleTopText}" Margin="0,8,0,2" />
-                        <Slider Minimum="5" Maximum="100" Value="{Binding ScaleTop}" SmallChange="1" LargeChange="10" />
-                        <TextBlock Text="{Binding DeformationText}" Margin="0,8,0,2" />
-                        <Slider Minimum="0" Maximum="1" Value="{Binding Deformation}" SmallChange="0.05" LargeChange="0.2" />
-                        <CheckBox Content="Outline the coarse elements" IsChecked="{Binding ShowElements}" Margin="0,8,0,2"
-                                  Visibility="{Binding IsResultOnCells, Converter={StaticResource Visible}}"
-                                  ToolTip="Elements of 4 x 4 x 4 cells and larger. Where there are no outlines, the mesh is fine." />
-                        <TextBlock Style="{StaticResource Hint}" Margin="0,8,0,0"
-                                   Text="The white arrow points at the weakest spot (on the print lines, at the weakest line shown), the white outline is the weakest layer line. Click a cell or a line to see its numbers." />
-                    </StackPanel>
-                </GroupBox>
-            </StackPanel>
-        </ScrollViewer>
-
-        <Grid>
-            <Grid.RowDefinitions>
-                <RowDefinition Height="Auto" />
-                <RowDefinition />
-                <RowDefinition Height="Auto" />
-            </Grid.RowDefinitions>
-
-            <StackPanel Orientation="Horizontal" Margin="8,8,8,6">
-                <RadioButton Content="Model" Style="{StaticResource Tab}"
-                             IsChecked="{Binding View, Converter={StaticResource Is}, ConverterParameter=Model}" />
-                <RadioButton Content="Toolpaths" Style="{StaticResource Tab}" IsEnabled="{Binding HasPrint}"
-                             IsChecked="{Binding View, Converter={StaticResource Is}, ConverterParameter=Toolpaths}" />
-                <RadioButton Content="Cells" Style="{StaticResource Tab}" IsEnabled="{Binding HasPrint}"
-                             IsChecked="{Binding View, Converter={StaticResource Is}, ConverterParameter=Cells}" />
-                <RadioButton Content="Results" Style="{StaticResource Tab}" IsEnabled="{Binding HasResult}"
-                             IsChecked="{Binding View, Converter={StaticResource Is}, ConverterParameter=Results}" />
-                <RadioButton Content="Compare" Style="{StaticResource Tab}" IsEnabled="{Binding HasModel}"
-                             IsChecked="{Binding View, Converter={StaticResource Is}, ConverterParameter=Compare}"
-                             ToolTip="The faces the part can lie on, side by side, and what each came to: the sweep's and those solved by hand" />
-            </StackPanel>
-
-            <Grid Grid.Row="1">
-                <!-- Everything is shown as it will be printed: Z up, the bed at the bottom. -->
-                <hx:Viewport3DX x:Name="Viewport"
-                                EffectsManager="{Binding EffectsManager}"
-                                Camera="{Binding Camera}"
-                                BackgroundColor="#FF1A1A19"
-                                ModelUpDirection="0,0,1"
-                                MSAA="Four"
-                                ShowViewCube="True"
-                                ShowCoordinateSystem="True"
-                                PreviewMouseLeftButtonDown="Viewport_MouseDown"
-                                PreviewMouseLeftButtonUp="Viewport_MouseUp">
-                    <hx:Viewport3DX.InputBindings>
-                        <!-- On top of Helix's own gestures (the right button turns, the wheel zooms): the middle button pans, as in the slicer. -->
-                        <MouseBinding Command="{x:Static hx:ViewportCommands.Pan}" Gesture="MiddleClick" />
-                    </hx:Viewport3DX.InputBindings>
-                    <hx:Viewport3DX.Style>
-                        <Style TargetType="hx:Viewport3DX">
-                            <Style.Triggers>
-                                <DataTrigger Binding="{Binding IsPicking}" Value="True">
-                                    <Setter Property="Cursor" Value="Cross" />
-                                </DataTrigger>
-                                <DataTrigger Binding="{Binding IsPlacing}" Value="True">
-                                    <Setter Property="Cursor" Value="Cross" />
-                                </DataTrigger>
-                            </Style.Triggers>
-                        </Style>
-                    </hx:Viewport3DX.Style>
-                    <!-- A light at the camera, so every face in view is lit in its own colour. -->
-                    <hx:DirectionalLight3D Direction="{Binding Camera.LookDirection}" Color="#FFC8C8C8" />
-                    <hx:DirectionalLight3D Direction="-0.3,0.5,-1" Color="#FF505050" />
-                    <hx:AmbientLight3D Color="#FF303030" />
-
-                    <hx:LineGeometryModel3D Geometry="{Binding BedGrid}" Color="#FF383835" Thickness="1" IsHitTestVisible="False" />
-                    <!-- The model carries the colours of its interfaces; faces are picked by a ray of our own, not by Helix's hit test. -->
-                    <hx:MeshGeometryModel3D Geometry="{Binding ModelGeometry}" Material="{Binding ColouredMaterial}" IsHitTestVisible="False" />
-                    <hx:MeshGeometryModel3D Geometry="{Binding GlyphGeometry}" Material="{Binding ColouredMaterial}" IsHitTestVisible="False" />
-                    <hx:MeshGeometryModel3D Geometry="{Binding BeadGeometry}" Material="{Binding ColouredMaterial}" IsHitTestVisible="False" />
-                    <hx:LineGeometryModel3D Geometry="{Binding BeadLines}" Color="White" Thickness="1.5" IsHitTestVisible="False" />
-                    <hx:MeshGeometryModel3D Geometry="{Binding CellGeometry}" Material="{Binding ColouredMaterial}" IsHitTestVisible="False" />
-                    <!-- Coarse elements lie where the values are low and the cells dark, so outlines a little lighter than those show. -->
-                    <hx:LineGeometryModel3D Geometry="{Binding ElementLines}" Color="#FF898781" Thickness="0.8" DepthBias="-100" IsHitTestVisible="False" />
-                    <!-- The weakest layer line and the cell probed last. -->
-                    <hx:LineGeometryModel3D Geometry="{Binding MarkLines}" Color="White" Thickness="2" DepthBias="-200" IsHitTestVisible="False" />
-                    <!-- What stands on the bed in the compare view: it faces down, out of sight, so its rim is drawn. -->
-                    <hx:LineGeometryModel3D Geometry="{Binding ContactLines}" Color="#FF199E70" Thickness="3" DepthBias="-300" IsHitTestVisible="False" />
-                    <!-- The numbers of the compare view's copies. -->
-                    <hx:BillboardTextModel3D Geometry="{Binding LabelGeometry}" IsHitTestVisible="False" />
-                </hx:Viewport3DX>
-
-                <Border HorizontalAlignment="Right" VerticalAlignment="Top" Margin="12,12,12,0" Padding="12,10" CornerRadius="4" MaxWidth="300"
-                        Background="#E61A1A19" BorderBrush="#1AFFFFFF" BorderThickness="1"
-                        Visibility="{Binding HasLegend, Converter={StaticResource Visible}}">
-                    <StackPanel>
-                        <TextBlock Text="{Binding LegendTitle}" Foreground="#FFC3C2B7" TextWrapping="Wrap" />
-                        <ItemsControl ItemsSource="{Binding LegendEntries}" Margin="0,4,0,0">
-                            <ItemsControl.ItemTemplate>
-                                <DataTemplate>
-                                    <StackPanel Orientation="Horizontal" Margin="0,3,0,0">
-                                        <Rectangle Width="12" Height="12" RadiusX="2" RadiusY="2" Fill="{Binding Swatch}" VerticalAlignment="Center" />
-                                        <TextBlock Text="{Binding Label}" Foreground="White" Margin="8,0,0,0" />
+                                <Border Style="{StaticResource Card}" Visibility="{Binding HasModel, Converter={StaticResource Visible}}">
+                                    <StackPanel>
+                                        <TextBlock Text="How it lies on the bed" Style="{StaticResource CardTitle}" />
+                                        <ToggleButton local:Look.Icon="&#xE7C9;" Content="Pick the face to lie on the bed" IsChecked="{Binding IsPlacing}" Padding="12,7"
+                                                      ToolTip="Then click the face of the model that is to lie on the bed. The model turns the shortest way to get it there, and its mounts and loads turn with it." />
+                                        <TextBlock Text="Or turn it by degrees, about X, then Y, then Z" Style="{StaticResource FieldLabel}" />
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition />
+                                                <ColumnDefinition Width="8" />
+                                                <ColumnDefinition />
+                                                <ColumnDefinition Width="8" />
+                                                <ColumnDefinition />
+                                            </Grid.ColumnDefinitions>
+                                            <DockPanel>
+                                                <TextBlock Text="X" FontWeight="SemiBold" Foreground="#FFE66767" VerticalAlignment="Center" Margin="0,0,6,0" />
+                                                <TextBox Text="{Binding RotationX}" />
+                                            </DockPanel>
+                                            <DockPanel Grid.Column="2">
+                                                <TextBlock Text="Y" FontWeight="SemiBold" Foreground="#FF5FC796" VerticalAlignment="Center" Margin="0,0,6,0" />
+                                                <TextBox Text="{Binding RotationY}" />
+                                            </DockPanel>
+                                            <DockPanel Grid.Column="4">
+                                                <TextBlock Text="Z" FontWeight="SemiBold" Foreground="#FF5598E7" VerticalAlignment="Center" Margin="0,0,6,0" />
+                                                <TextBox Text="{Binding RotationZ}" />
+                                            </DockPanel>
+                                        </Grid>
+                                        <Button Style="{StaticResource LinkButton}" local:Look.Icon="&#xE7A7;" Content="Lay it as modelled" Command="{Binding ResetRotationCommand}" Margin="-8,8,0,-4"
+                                                ToolTip="Back to no rotation: the part lies as in its STL file" />
                                     </StackPanel>
-                                </DataTemplate>
-                            </ItemsControl.ItemTemplate>
-                        </ItemsControl>
-                        <Grid Height="{x:Static local:MainViewModel.LegendBarHeight}" Margin="0,10,0,8"
-                              Visibility="{Binding HasLegendScale, Converter={StaticResource Visible}}">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="14" />
-                                <ColumnDefinition Width="*" />
-                            </Grid.ColumnDefinitions>
-                            <Rectangle Fill="{Binding LegendScale}" RadiusX="2" RadiusY="2" />
-                            <ItemsControl Grid.Column="1" ItemsSource="{Binding LegendTicks}" Margin="8,0,0,0" MinWidth="120">
-                                <ItemsControl.ItemsPanel>
-                                    <ItemsPanelTemplate>
-                                        <Canvas />
-                                    </ItemsPanelTemplate>
-                                </ItemsControl.ItemsPanel>
-                                <ItemsControl.ItemContainerStyle>
-                                    <Style TargetType="ContentPresenter">
-                                        <Setter Property="Canvas.Top" Value="{Binding Top}" />
-                                    </Style>
-                                </ItemsControl.ItemContainerStyle>
+                                </Border>
+
+                                <Border Style="{StaticResource Card}">
+                                    <StackPanel>
+                                        <TextBlock Text="Printer and filament" Style="{StaticResource CardTitle}" />
+                                        <DockPanel>
+                                            <TextBlock DockPanel.Dock="Left" Text="&#xE749;" Style="{StaticResource Icon}" VerticalAlignment="Top" Margin="0,2,10,0"
+                                                       Foreground="{StaticResource TextMutedBrush}" />
+                                            <TextBlock Text="{Binding Printer}" TextWrapping="Wrap">
+                                                <TextBlock.Style>
+                                                    <Style TargetType="TextBlock" BasedOn="{StaticResource Body}">
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding CanSlice}" Value="False">
+                                                                <Setter Property="Foreground" Value="{StaticResource CautionBrush}" />
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </TextBlock.Style>
+                                            </TextBlock>
+                                        </DockPanel>
+                                        <TextBlock Text="Process" Style="{StaticResource FieldLabel}" Margin="0,14,0,5" />
+                                        <ComboBox ItemsSource="{Binding Processes}" SelectedItem="{Binding Process}" />
+                                        <TextBlock Text="Filament" Style="{StaticResource FieldLabel}" />
+                                        <ComboBox ItemsSource="{Binding Filaments}" SelectedItem="{Binding Filament}" />
+                                        <TextBlock Text="Solved with the material" Style="{StaticResource FieldLabel}" Margin="0,14,0,5" />
+                                        <!-- A material that is not the filament's own is said so, in the colour of a caution. -->
+                                        <TextBlock Text="{Binding MaterialText}">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock" BasedOn="{StaticResource Body}">
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding MaterialIsStandIn}" Value="True">
+                                                            <Setter Property="Foreground" Value="{StaticResource CautionBrush}" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                        <Button Style="{StaticResource LinkButton}" local:Look.Icon="&#xE8F1;" Content="Materials and data sheets…" Click="Materials_Click" Margin="-8,8,0,-4"
+                                                ToolTip="The material of every filament, each number with its source; and new materials from technical data sheets" />
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+
+                            <!-- ===== 2 Mounts & loads ===== -->
+                            <StackPanel Visibility="{Binding Stage, Converter={StaticResource IsVisible}, ConverterParameter=Loads}">
+                                <TextBlock Text="Mounts &amp; loads" Style="{StaticResource PageTitle}" />
+                                <TextBlock Style="{StaticResource Hint}" Margin="0,4,0,16" Text="Pick the faces where the part is held, and those where it is pushed or pulled." />
+
+                                <Border Style="{StaticResource Card}">
+                                    <StackPanel>
+                                        <DockPanel Margin="0,-4,0,8">
+                                            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Margin="0,0,-8,0">
+                                                <Button Style="{StaticResource GhostButton}" local:Look.Icon="&#xE710;" Content="Mount" Command="{Binding AddMountCommand}"
+                                                        ToolTip="A face where the part is held. Then click its faces on the model." />
+                                                <Button Style="{StaticResource GhostButton}" local:Look.Icon="&#xE710;" Content="Load" Command="{Binding AddLoadCommand}"
+                                                        ToolTip="A face where something pushes or pulls on the part. Then click its faces on the model." />
+                                            </StackPanel>
+                                            <TextBlock Text="Faces" Style="{StaticResource CardTitle}" Margin="0" VerticalAlignment="Center" />
+                                        </DockPanel>
+                                        <TextBlock Style="{StaticResource Hint}" Visibility="{Binding Interfaces.Count, Converter={StaticResource Shown}, ConverterParameter=Not}"
+                                                   Text="None yet. Add a mount where the part is held and a load where it is pushed or pulled, then click their faces on the model." />
+                                        <ListBox ItemsSource="{Binding Interfaces}" SelectedItem="{Binding SelectedInterface}" MaxHeight="232" Margin="-6,0"
+                                                 Visibility="{Binding Interfaces.Count, Converter={StaticResource Shown}}">
+                                            <ListBox.ItemTemplate>
+                                                <DataTemplate>
+                                                    <DockPanel>
+                                                        <Border DockPanel.Dock="Left" Width="30" Height="30" CornerRadius="8" Background="#14FFFFFF" VerticalAlignment="Top" Margin="0,1,10,0">
+                                                            <TextBlock Text="{Binding Glyph}" Style="{StaticResource Icon}" HorizontalAlignment="Center" Foreground="{Binding Swatch}" />
+                                                        </Border>
+                                                        <StackPanel>
+                                                            <TextBlock TextTrimming="CharacterEllipsis">
+                                                                <Run Text="{Binding Name, Mode=OneWay}" FontWeight="SemiBold" /><Run Text="  " /><Run Text="{Binding KindText, Mode=OneWay}" Foreground="{StaticResource TextMutedBrush}" />
+                                                            </TextBlock>
+                                                            <TextBlock Text="{Binding FacesText}" TextWrapping="Wrap" FontSize="12" Margin="0,2,0,0">
+                                                                <TextBlock.Style>
+                                                                    <Style TargetType="TextBlock">
+                                                                        <Setter Property="Foreground" Value="{StaticResource TextMutedBrush}" />
+                                                                        <Style.Triggers>
+                                                                            <DataTrigger Binding="{Binding HasFaces}" Value="False">
+                                                                                <Setter Property="Foreground" Value="{StaticResource CautionBrush}" />
+                                                                            </DataTrigger>
+                                                                        </Style.Triggers>
+                                                                    </Style>
+                                                                </TextBlock.Style>
+                                                            </TextBlock>
+                                                        </StackPanel>
+                                                    </DockPanel>
+                                                </DataTemplate>
+                                            </ListBox.ItemTemplate>
+                                        </ListBox>
+                                    </StackPanel>
+                                </Border>
+
+                                <!-- The selected interface. -->
+                                <Border Style="{StaticResource Card}" Visibility="{Binding HasSelectedInterface, Converter={StaticResource Visible}}">
+                                    <StackPanel>
+                                        <DockPanel Margin="0,-4,0,0">
+                                            <Button DockPanel.Dock="Right" Style="{StaticResource IconButton}" local:Look.Icon="&#xE74D;" Command="{Binding RemoveInterfaceCommand}"
+                                                    Margin="0,0,-6,0" ToolTip="Remove it" />
+                                            <TextBlock Text="{Binding SelectedInterface.Name}" Style="{StaticResource CardTitle}" Margin="0" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                                        </DockPanel>
+                                        <TextBlock Text="Name" Style="{StaticResource FieldLabel}" Margin="0,8,0,5" />
+                                        <TextBox Text="{Binding SelectedInterface.Name, UpdateSourceTrigger=PropertyChanged}" />
+                                        <TextBlock Text="It is a" Style="{StaticResource FieldLabel}" />
+                                        <ComboBox ItemsSource="{Binding Kinds}" DisplayMemberPath="Label" SelectedValuePath="Value" SelectedValue="{Binding SelectedInterface.Kind}" />
+
+                                        <TextBlock Text="Faces" Style="{StaticResource FieldLabel}" />
+                                        <DockPanel>
+                                            <Button DockPanel.Dock="Right" Content="Clear" Command="{Binding ClearFacesCommand}" Margin="8,0,0,0" ToolTip="Takes off every face picked" />
+                                            <ToggleButton local:Look.Icon="&#xE7C9;" Content="Pick on the model" IsChecked="{Binding IsPicking}"
+                                                          ToolTip="While this is on, a click on the model adds the face under it; a click on a face that is already picked takes it off" />
+                                        </DockPanel>
+                                        <TextBlock Text="{Binding SelectedInterface.FacesText}" Style="{StaticResource Hint}" Margin="0,7,0,0" />
+                                        <DockPanel Margin="0,8,0,0"
+                                                   ToolTip="A click picks the facet under it and its neighbours for as long as they differ by less than this: a flat face up to its edges, a hole's wall all the way round. Lower it to keep a flat face from running on into a rounded edge.">
+                                            <TextBlock DockPanel.Dock="Right" Text="°" Style="{StaticResource Unit}" Margin="6,0,0,0" />
+                                            <TextBox DockPanel.Dock="Right" Text="{Binding PickAngle}" Width="54" />
+                                            <TextBlock Text="A pick runs on across edges up to" Style="{StaticResource Hint}" VerticalAlignment="Center" Margin="0,0,8,0" />
+                                        </DockPanel>
+                                        <CheckBox Content="Also held along the hole" IsChecked="{Binding SelectedInterface.Axial}" Margin="0,12,0,0"
+                                                  Visibility="{Binding SelectedInterface.IsBoltHole, Converter={StaticResource Visible}, FallbackValue=Collapsed}"
+                                                  ToolTip="Ticked: a bolt done up tight. Unticked: a pin, which holds across the hole only, so the part can slide along it." />
+
+                                        <!-- The load's value in the load case shown. -->
+                                        <StackPanel Visibility="{Binding SelectedInterface.IsLoad, Converter={StaticResource Visible}, FallbackValue=Collapsed}">
+                                            <Separator />
+                                            <TextBlock Style="{StaticResource FieldLabel}" Margin="0,0,0,5">
+                                                <Run Text="Its value in" /> <Run Text="{Binding SelectedLoadCase.Name, Mode=OneWay}" Foreground="{StaticResource TextSecondaryBrush}" />
+                                            </TextBlock>
+                                            <Grid Visibility="{Binding SelectedInterface.IsVectorValue, Converter={StaticResource Visible}, FallbackValue=Collapsed}"
+                                                  ToolTip="{Binding SelectedInterface.ValueHint}">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition />
+                                                    <ColumnDefinition Width="8" />
+                                                    <ColumnDefinition />
+                                                    <ColumnDefinition Width="8" />
+                                                    <ColumnDefinition />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <DockPanel>
+                                                    <TextBlock Text="X" FontWeight="SemiBold" Foreground="#FFE66767" VerticalAlignment="Center" Margin="0,0,6,0" />
+                                                    <TextBox Text="{Binding SelectedInterface.ValueX, UpdateSourceTrigger=PropertyChanged}" />
+                                                </DockPanel>
+                                                <DockPanel Grid.Column="2">
+                                                    <TextBlock Text="Y" FontWeight="SemiBold" Foreground="#FF5FC796" VerticalAlignment="Center" Margin="0,0,6,0" />
+                                                    <TextBox Text="{Binding SelectedInterface.ValueY, UpdateSourceTrigger=PropertyChanged}" />
+                                                </DockPanel>
+                                                <DockPanel Grid.Column="4">
+                                                    <TextBlock Text="Z" FontWeight="SemiBold" Foreground="#FF5598E7" VerticalAlignment="Center" Margin="0,0,6,0" />
+                                                    <TextBox Text="{Binding SelectedInterface.ValueZ, UpdateSourceTrigger=PropertyChanged}" />
+                                                </DockPanel>
+                                                <TextBlock Grid.Column="5" Text="N" Style="{StaticResource Unit}" />
+                                            </Grid>
+                                            <DockPanel Visibility="{Binding SelectedInterface.IsScalarValue, Converter={StaticResource Visible}, FallbackValue=Collapsed}"
+                                                       ToolTip="{Binding SelectedInterface.ValueHint}">
+                                                <TextBlock DockPanel.Dock="Right" Text="{Binding SelectedInterface.ValueUnit}" Style="{StaticResource Unit}" />
+                                                <TextBox Text="{Binding SelectedInterface.ValueText, UpdateSourceTrigger=PropertyChanged}" />
+                                            </DockPanel>
+                                            <TextBlock Text="{Binding SelectedInterface.ValueError}" Foreground="{StaticResource DangerBrush}" TextWrapping="Wrap" Margin="0,6,0,0"
+                                                       Visibility="{Binding SelectedInterface.HasValueError, Converter={StaticResource Visible}, FallbackValue=Collapsed}" />
+                                            <CheckBox Content="One number: a push square onto the face" IsChecked="{Binding SelectedInterface.AlongNormal}" Margin="0,10,0,0"
+                                                      Visibility="{Binding SelectedInterface.IsForce, Converter={StaticResource Visible}, FallbackValue=Collapsed}"
+                                                      ToolTip="The force is one number: how hard it pushes onto the face, square to it. A negative number pulls. Unticked, it is given as X, Y, Z." />
+                                            <TextBlock Style="{StaticResource Hint}" Margin="0,8,0,0"
+                                                       Visibility="{Binding SelectedInterface.IsVectorValue, Converter={StaticResource Visible}, FallbackValue=Collapsed}"
+                                                       Text="In the directions of the view: Z is up from the bed. The force is fixed to the part and turns with it." />
+                                        </StackPanel>
+                                    </StackPanel>
+                                </Border>
+
+                                <Border Style="{StaticResource Card}">
+                                    <StackPanel>
+                                        <TextBlock Text="Load cases" Style="{StaticResource CardTitle}" />
+                                        <DockPanel>
+                                            <Button DockPanel.Dock="Right" Style="{StaticResource IconButton}" local:Look.Icon="&#xE738;" Command="{Binding RemoveLoadCaseCommand}"
+                                                    Margin="4,0,-6,0" ToolTip="Remove this load case" />
+                                            <Button DockPanel.Dock="Right" Style="{StaticResource IconButton}" local:Look.Icon="&#xE710;" Command="{Binding AddLoadCaseCommand}"
+                                                    Margin="6,0,0,0" ToolTip="Add a load case that starts with this one's values" />
+                                            <ComboBox ItemsSource="{Binding LoadCases}" DisplayMemberPath="Name" SelectedItem="{Binding SelectedLoadCase}" />
+                                        </DockPanel>
+                                        <TextBlock Text="Its name" Style="{StaticResource FieldLabel}" />
+                                        <TextBox Text="{Binding SelectedLoadCase.Name, UpdateSourceTrigger=PropertyChanged}" />
+                                        <TextBlock Style="{StaticResource Hint}" Margin="0,10,0,0"
+                                                   Text="The mounts hold the same in every load case; each load has a value of its own in each. A solve is of one load case." />
+                                    </StackPanel>
+                                </Border>
+
+                                <Border Style="{StaticResource Card}">
+                                    <StackPanel>
+                                        <TextBlock Text="Solver mesh" Style="{StaticResource CardTitle}" />
+                                        <ComboBox ItemsSource="{Binding Levels}" DisplayMemberPath="Label" SelectedItem="{Binding Level}" />
+                                        <TextBlock Style="{StaticResource Hint}" Margin="0,10,0,0"
+                                                   Text="The solve starts with coarse elements and refines them where the part is weakest, down to single bead cells." />
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+
+                            <!-- ===== 3 Print preview ===== -->
+                            <StackPanel Visibility="{Binding Stage, Converter={StaticResource IsVisible}, ConverterParameter=Preview}">
+                                <TextBlock Text="Print preview" Style="{StaticResource PageTitle}" />
+                                <TextBlock Style="{StaticResource Hint}" Margin="0,4,0,16" Text="The toolpath Bambu Studio made, and the bead cells the solver works on." />
+
+                                <Border Style="{StaticResource SegmentStrip}" Margin="0,0,0,14">
+                                    <UniformGrid Rows="1">
+                                        <RadioButton Style="{StaticResource Segment}" Content="Toolpath"
+                                                     IsChecked="{Binding View, Converter={StaticResource Is}, ConverterParameter=Toolpaths}" />
+                                        <RadioButton Style="{StaticResource Segment}" Content="Bead cells"
+                                                     IsChecked="{Binding View, Converter={StaticResource Is}, ConverterParameter=Cells}" />
+                                    </UniformGrid>
+                                </Border>
+
+                                <Border Style="{StaticResource Caution}" Visibility="{Binding PrintIsStale, Converter={StaticResource Visible}}">
+                                    <DockPanel>
+                                        <TextBlock DockPanel.Dock="Left" Text="&#xE7BA;" Style="{StaticResource Icon}" Foreground="{StaticResource CautionBrush}" VerticalAlignment="Top" Margin="0,2,10,0" />
+                                        <StackPanel>
+                                            <TextBlock Text="{Binding StaleText}" Foreground="{StaticResource CautionBrush}" TextWrapping="Wrap" />
+                                            <Button Style="{StaticResource LinkButton}" local:Look.Icon="&#xE72C;" Content="Slice again" Command="{Binding SliceCommand}" Margin="-8,4,0,-4" />
+                                        </StackPanel>
+                                    </DockPanel>
+                                </Border>
+                                <Border Style="{StaticResource Caution}" Visibility="{Binding PrintWarning, Converter={StaticResource Shown}}">
+                                    <DockPanel>
+                                        <TextBlock DockPanel.Dock="Left" Text="&#xE7BA;" Style="{StaticResource Icon}" Foreground="{StaticResource CautionBrush}" VerticalAlignment="Top" Margin="0,2,10,0" />
+                                        <TextBlock Foreground="{StaticResource CautionBrush}" TextWrapping="Wrap">
+                                            <Run Text="Bambu Studio warns:" FontWeight="SemiBold" /> <Run Text="{Binding PrintWarning, Mode=OneWay}" />
+                                        </TextBlock>
+                                    </DockPanel>
+                                </Border>
+
+                                <Border Style="{StaticResource Card}">
+                                    <ItemsControl ItemsSource="{Binding PrintFacts}" ItemTemplate="{StaticResource FactTile}" Margin="0,0,0,-10">
+                                        <ItemsControl.ItemsPanel>
+                                            <ItemsPanelTemplate>
+                                                <UniformGrid Columns="2" />
+                                            </ItemsPanelTemplate>
+                                        </ItemsControl.ItemsPanel>
+                                    </ItemsControl>
+                                </Border>
+
+                                <Border Style="{StaticResource Card}" Visibility="{Binding View, Converter={StaticResource IsVisible}, ConverterParameter=Toolpaths}">
+                                    <StackPanel>
+                                        <TextBlock Text="Colour the lines by" Style="{StaticResource CardTitle}" />
+                                        <ComboBox ItemsSource="{Binding Colourings}" DisplayMemberPath="Label" SelectedValuePath="Value" SelectedValue="{Binding Colouring}" />
+                                        <TextBlock Text="Line types shown" Style="{StaticResource FieldLabel}" Margin="0,14,0,4" />
+                                        <ItemsControl ItemsSource="{Binding LineTypes}" ItemTemplate="{StaticResource LineTypeToggle}" />
+                                        <Separator />
+                                        <CheckBox Content="Thin lines instead of full beads" IsChecked="{Binding ThinLines}"
+                                                  ToolTip="Much less to draw: for big parts on a weak graphics card" />
+                                    </StackPanel>
+                                </Border>
+
+                                <Border Style="{StaticResource Card}" Visibility="{Binding View, Converter={StaticResource IsVisible}, ConverterParameter=Cells}">
+                                    <StackPanel>
+                                        <TextBlock Text="Colour the cells by" Style="{StaticResource CardTitle}" />
+                                        <ComboBox ItemsSource="{Binding CellColourings}" DisplayMemberPath="Label" SelectedValuePath="Value" SelectedValue="{Binding CellColouring}" />
+                                        <TextBlock Style="{StaticResource Hint}" Margin="0,10,0,0"
+                                                   Text="A bead cell is a line wide and a layer high: the smallest piece the solver works with." />
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+
+                            <!-- ===== 4 Results ===== -->
+                            <StackPanel Visibility="{Binding Stage, Converter={StaticResource IsVisible}, ConverterParameter=Results}">
+                                <TextBlock Text="Results" Style="{StaticResource PageTitle}" />
+                                <TextBlock Style="{StaticResource Hint}" Margin="0,4,0,16" Text="Where and how the part breaks first under the load case solved." />
+
+                                <!-- The safety factor in the colour of its band in the view. -->
+                                <Border CornerRadius="10" BorderThickness="1" Padding="18,14,18,16" Margin="0,0,0,12">
+                                    <Border.Style>
+                                        <Style TargetType="Border">
+                                            <Setter Property="Background" Value="{StaticResource CardBrush}" />
+                                            <Setter Property="BorderBrush" Value="{StaticResource CardBorderBrush}" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding HeadlineRating}" Value="breaks">
+                                                    <Setter Property="Background" Value="{StaticResource DangerBackBrush}" />
+                                                    <Setter Property="BorderBrush" Value="#FF5C302C" />
+                                                </DataTrigger>
+                                                <DataTrigger Binding="{Binding HeadlineRating}" Value="marginal">
+                                                    <Setter Property="Background" Value="{StaticResource CautionBackBrush}" />
+                                                    <Setter Property="BorderBrush" Value="{StaticResource CautionBorderBrush}" />
+                                                </DataTrigger>
+                                                <DataTrigger Binding="{Binding HeadlineRating}" Value="holds">
+                                                    <Setter Property="Background" Value="{StaticResource GoodBackBrush}" />
+                                                    <Setter Property="BorderBrush" Value="#FF2B4D3C" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Border.Style>
+                                    <StackPanel>
+                                        <TextBlock Text="{Binding HeadlineLoadCase}" Foreground="{StaticResource TextSecondaryBrush}" FontSize="12" TextTrimming="CharacterEllipsis" />
+                                        <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
+                                            <TextBlock Text="{Binding HeadlineValue}" FontSize="40" FontWeight="SemiBold" TextOptions.TextFormattingMode="Ideal">
+                                                <TextBlock.Style>
+                                                    <Style TargetType="TextBlock">
+                                                        <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding HeadlineRating}" Value="breaks">
+                                                                <Setter Property="Foreground" Value="{StaticResource DangerBrush}" />
+                                                            </DataTrigger>
+                                                            <DataTrigger Binding="{Binding HeadlineRating}" Value="marginal">
+                                                                <Setter Property="Foreground" Value="{StaticResource CautionBrush}" />
+                                                            </DataTrigger>
+                                                            <DataTrigger Binding="{Binding HeadlineRating}" Value="holds">
+                                                                <Setter Property="Foreground" Value="{StaticResource GoodBrush}" />
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </TextBlock.Style>
+                                            </TextBlock>
+                                            <TextBlock Text="safety factor" Foreground="{StaticResource TextSecondaryBrush}" VerticalAlignment="Bottom" Margin="12,0,0,10" />
+                                        </StackPanel>
+                                        <TextBlock Text="{Binding HeadlineVerdict}" TextWrapping="Wrap" Margin="0,4,0,0" />
+                                        <TextBlock Text="{Binding HeadlineDetail}" Style="{StaticResource Body}" Margin="0,6,0,0"
+                                                   Visibility="{Binding HeadlineDetail, Converter={StaticResource Shown}}" />
+                                    </StackPanel>
+                                </Border>
+
+                                <Border Style="{StaticResource Caution}" Visibility="{Binding HasResultWarning, Converter={StaticResource Visible}}">
+                                    <DockPanel>
+                                        <TextBlock DockPanel.Dock="Left" Text="&#xE7BA;" Style="{StaticResource Icon}" Foreground="{StaticResource CautionBrush}" VerticalAlignment="Top" Margin="0,2,10,0" />
+                                        <TextBlock TextWrapping="Wrap" Foreground="{StaticResource CautionBrush}">
+                                            <Run Text="Do not rely on these numbers." FontWeight="SemiBold" />
+                                            <LineBreak />
+                                            <Run Text="{Binding ResultWarning, Mode=OneWay}" />
+                                        </TextBlock>
+                                    </DockPanel>
+                                </Border>
+                                <Border Style="{StaticResource Caution}" Visibility="{Binding PrintIsStale, Converter={StaticResource Visible}}">
+                                    <DockPanel>
+                                        <TextBlock DockPanel.Dock="Left" Text="&#xE7BA;" Style="{StaticResource Icon}" Foreground="{StaticResource CautionBrush}" VerticalAlignment="Top" Margin="0,2,10,0" />
+                                        <TextBlock Text="{Binding StaleText}" Foreground="{StaticResource CautionBrush}" TextWrapping="Wrap" />
+                                    </DockPanel>
+                                </Border>
+
+                                <Border Style="{StaticResource Card}">
+                                    <ItemsControl ItemsSource="{Binding ResultFacts}" ItemTemplate="{StaticResource FactRow}" Margin="0,-4" />
+                                </Border>
+
+                                <Border Style="{StaticResource Card}">
+                                    <StackPanel>
+                                        <TextBlock Text="Show" Style="{StaticResource CardTitle}" />
+                                        <ComboBox ItemsSource="{Binding Quantities}" DisplayMemberPath="Label" SelectedValuePath="Value" SelectedValue="{Binding Quantity}" />
+                                        <TextBlock Text="Drawn on" Style="{StaticResource FieldLabel}" Margin="0,14,0,5" />
+                                        <Border Style="{StaticResource SegmentStrip}"
+                                                ToolTip="On the print lines, each piece of a line takes the result of the cell it runs through: which wall line breaks first, which infill lines carry the load">
+                                            <UniformGrid Rows="1">
+                                                <RadioButton Style="{StaticResource Segment}" Content="Bead cells"
+                                                             IsChecked="{Binding Drawing, Converter={StaticResource Is}, ConverterParameter=Cells}" />
+                                                <RadioButton Style="{StaticResource Segment}" Content="Print lines"
+                                                             IsChecked="{Binding Drawing, Converter={StaticResource Is}, ConverterParameter=Lines}" />
+                                            </UniformGrid>
+                                        </Border>
+                                        <StackPanel Visibility="{Binding IsResultOnLines, Converter={StaticResource Visible}}" Margin="0,10,0,0">
+                                            <ItemsControl ItemsSource="{Binding LineTypes}" ItemTemplate="{StaticResource LineTypeToggle}"
+                                                          ToolTip="Untick a line type to see the lines behind it: with the sparse infill off, the walls" />
+                                            <CheckBox Content="Thin lines instead of full beads" IsChecked="{Binding ThinLines}" Margin="0,8,0,0"
+                                                      ToolTip="Much less to draw: for big parts on a weak graphics card" />
+                                        </StackPanel>
+                                        <TextBlock Text="{Binding ScaleTopText}" Style="{StaticResource FieldLabel}" Margin="0,16,0,2" />
+                                        <Slider Minimum="5" Maximum="100" Value="{Binding ScaleTop}" SmallChange="1" LargeChange="10"
+                                                ToolTip="End the colour scale below the peak, so that a single sharp peak does not darken everything else" />
+                                        <TextBlock Text="{Binding DeformationText}" Style="{StaticResource FieldLabel}" Margin="0,10,0,2" />
+                                        <Slider Minimum="0" Maximum="1" Value="{Binding Deformation}" SmallChange="0.05" LargeChange="0.2" />
+                                        <CheckBox Content="Outline the coarse elements" IsChecked="{Binding ShowElements}" Margin="0,10,0,0"
+                                                  Visibility="{Binding IsResultOnCells, Converter={StaticResource Visible}}"
+                                                  ToolTip="Elements of 4 x 4 x 4 cells and larger. Where there are no outlines, the mesh is fine." />
+                                        <TextBlock Style="{StaticResource Hint}" Margin="0,12,0,0"
+                                                   Text="The white arrow points at the weakest spot (on the print lines, at the weakest line shown), the white outline is the weakest layer line. Click a cell or a line to see its numbers." />
+                                    </StackPanel>
+                                </Border>
+
+                                <Border Style="{StaticResource Card}">
+                                    <Expander>
+                                        <Expander.Header>
+                                            <TextBlock>
+                                                <Run Text="Solver passes" FontWeight="SemiBold" /><Run Text="  " /><Run Text="{Binding Passes.Count, Mode=OneWay}" Foreground="{StaticResource TextMutedBrush}" />
+                                            </TextBlock>
+                                        </Expander.Header>
+                                        <StackPanel>
+                                            <TextBlock Style="{StaticResource Hint}" Margin="0,0,0,8" Text="Select a pass to see the mesh and the stresses as they were after it." />
+                                            <ListBox ItemsSource="{Binding Passes}" SelectedIndex="{Binding Pass}" Margin="-6,0">
+                                                <ListBox.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <DockPanel>
+                                                            <DockPanel.ToolTip>
+                                                                <TextBlock>
+                                                                    <Run Text="Elements by size, bead cells first:" /> <Run Text="{Binding Elements, Mode=OneWay}" /><LineBreak />
+                                                                    <Run Text="Max von Mises" /> <Run Text="{Binding MaxVonMises, Mode=OneWay}" /> <Run Text="MPa; the weakest spot lies in" /> <Run Text="{Binding PeakIn, Mode=OneWay}" />
+                                                                </TextBlock>
+                                                            </DockPanel.ToolTip>
+                                                            <TextBlock DockPanel.Dock="Right" VerticalAlignment="Center" FontWeight="SemiBold">
+                                                                <Run Text="SF" Foreground="{StaticResource TextMutedBrush}" FontWeight="Normal" /> <Run Text="{Binding SafetyFactor, Mode=OneWay}" />
+                                                            </TextBlock>
+                                                            <StackPanel>
+                                                                <TextBlock>
+                                                                    <Run Text="Pass" /> <Run Text="{Binding Pass, Mode=OneWay}" />
+                                                                </TextBlock>
+                                                                <TextBlock FontSize="12" Foreground="{StaticResource TextMutedBrush}">
+                                                                    <Run Text="{Binding Unknowns, Mode=OneWay}" /> <Run Text="unknowns ·" /> <Run Text="{Binding Iterations, Mode=OneWay}" /> <Run Text="iterations ·" /> <Run Text="{Binding Seconds, Mode=OneWay}" /> <Run Text="s" />
+                                                                </TextBlock>
+                                                            </StackPanel>
+                                                        </DockPanel>
+                                                    </DataTemplate>
+                                                </ListBox.ItemTemplate>
+                                            </ListBox>
+                                        </StackPanel>
+                                    </Expander>
+                                </Border>
+
+                                <Border Style="{StaticResource Card}">
+                                    <Expander>
+                                        <Expander.Header>
+                                            <TextBlock Text="Full report" FontWeight="SemiBold" />
+                                        </Expander.Header>
+                                        <TextBox Style="{StaticResource ReadOnlyText}" Text="{Binding ResultSummary, Mode=OneWay}" FontSize="12" />
+                                    </Expander>
+                                </Border>
+                            </StackPanel>
+
+                            <!-- ===== 5 Orientations ===== -->
+                            <StackPanel Visibility="{Binding Stage, Converter={StaticResource IsVisible}, ConverterParameter=Compare}">
+                                <TextBlock Text="Compare orientations" Style="{StaticResource PageTitle}" />
+                                <TextBlock Style="{StaticResource Hint}" Margin="0,4,0,16" Text="Try the faces the part can lie on, and rank them by how strong the print comes out." />
+
+                                <Border Style="{StaticResource Card}">
+                                    <StackPanel>
+                                        <TextBlock Text="Which faces to try" Style="{StaticResource CardTitle}" />
+                                        <!-- Both numbers are saved with the study, and neither has a built-in value. -->
+                                        <TextBlock Text="Smallest contact with the bed" Style="{StaticResource FieldLabel}" Margin="0,0,0,5" />
+                                        <DockPanel ToolTip="A face that touches the bed with less than this is not tried. There is no built-in value: until one is typed, every face with contact is shown and the sweep does not start.">
+                                            <TextBlock DockPanel.Dock="Right" Text="mm²" Style="{StaticResource Unit}" />
+                                            <TextBox Text="{Binding MinContactText, UpdateSourceTrigger=PropertyChanged}" />
+                                        </DockPanel>
+                                        <TextBlock Text="Of those, the largest" Style="{StaticResource FieldLabel}" />
+                                        <DockPanel ToolTip="Of the faces left, the largest this many are tried. Empty: all of them.">
+                                            <TextBlock DockPanel.Dock="Right" Text="faces" Style="{StaticResource Unit}" />
+                                            <TextBox Text="{Binding CountText, UpdateSourceTrigger=PropertyChanged}" />
+                                        </DockPanel>
+                                        <CheckBox Content="Also spun on the bed by 45° and 90°" IsChecked="{Binding Spins}" Margin="0,12,0,0"
+                                                  ToolTip="The walls follow the part, but the sparse infill and the top and bottom skins follow the bed's axes." />
+                                        <TextBlock Text="{Binding SweepText}" Style="{StaticResource Hint}" Margin="0,12,0,0" />
+                                        <Button Style="{StaticResource LinkButton}" local:Look.Icon="&#xE72C;" Content="List the faces again, as the part lies now" Command="{Binding PreviewFacesCommand}"
+                                                Margin="-8,8,0,-4"
+                                                ToolTip="Lists the faces as the part lies now and shows the part laid on each, side by side. Tick off those not to try, in the table or by a click on the copy." />
+                                    </StackPanel>
+                                </Border>
+
+                                <Border Style="{StaticResource Card}">
+                                    <StackPanel>
+                                        <TextBlock Text="How they are ranked" Style="{StaticResource CardTitle}" />
+                                        <TextBlock Style="{StaticResource Hint}"
+                                                   Text="By the lowest safety factor over the load cases, then the largest displacement, the print time, the filament and the support. The quick solve that screens every orientation refines only to elements of 2³ cells and reads the safety factor high: it decides which 3 are solved in full, whose numbers count. Those only screened rank after them." />
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+                        </Grid>
+                    </ScrollViewer>
+                </DockPanel>
+            </Border>
+
+            <!-- ===== The view, with what floats over it, and the comparison's table below ===== -->
+            <DockPanel Grid.Column="1">
+                <DockPanel DockPanel.Dock="Bottom" Visibility="{Binding Stage, Converter={StaticResource IsVisible}, ConverterParameter=Compare}">
+                    <Thumb DockPanel.Dock="Top" Height="5" Cursor="SizeNS" DragDelta="TableSizer_DragDelta" ToolTip="Drag to make the table taller or shorter">
+                        <Thumb.Template>
+                            <ControlTemplate>
+                                <Border Background="{StaticResource DividerBrush}" />
+                            </ControlTemplate>
+                        </Thumb.Template>
+                    </Thumb>
+                    <!-- The comparison: the sweep's candidates as ranked, and the orientations solved by hand. -->
+                    <DockPanel x:Name="CompareTable" Height="260" Background="{StaticResource PanelBrush}">
+                        <DockPanel DockPanel.Dock="Top" Margin="16,10,12,6">
+                            <Button DockPanel.Dock="Right" local:Look.Icon="&#xE8A7;" Content="Open its result" Command="{Binding OpenCompareRowCommand}"
+                                    ToolTip="Shows the selected orientation's result: its toolpath, its cells and the load case that governs it" />
+                            <TextBlock Text="Orientations" Style="{StaticResource CardTitle}" Margin="0" VerticalAlignment="Center" />
+                            <TextBlock Style="{StaticResource Hint}" VerticalAlignment="Center" Margin="14,0,12,0" TextTrimming="CharacterEllipsis" TextWrapping="NoWrap"
+                                       Text="Untick a row, or click its copy in the view, to leave it out. Double-click a row to open its result." />
+                        </DockPanel>
+                        <DataGrid ItemsSource="{Binding CompareRows}" SelectedItem="{Binding SelectedCompareRow}" AutoGenerateColumns="False" CanUserAddRows="False"
+                                  SelectionMode="Single" CanUserSortColumns="False" CanUserReorderColumns="False" MouseDoubleClick="CompareRow_DoubleClick" Margin="4,0,0,0">
+                            <DataGrid.Columns>
+                                <DataGridTemplateColumn Header="Try">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <CheckBox IsChecked="{Binding IsTicked, UpdateSourceTrigger=PropertyChanged}" IsEnabled="{Binding CanTick}" HorizontalAlignment="Center" Margin="0" />
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
+                                <DataGridTextColumn Header="" Binding="{Binding Label}" IsReadOnly="True" />
+                                <DataGridTextColumn Header="Rank" Binding="{Binding Rank}" IsReadOnly="True" />
+                                <DataGridTextColumn Header="Safety factor" Binding="{Binding SafetyFactor}" IsReadOnly="True">
+                                    <DataGridTextColumn.ElementStyle>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="FontWeight" Value="SemiBold" />
+                                        </Style>
+                                    </DataGridTextColumn.ElementStyle>
+                                </DataGridTextColumn>
+                                <DataGridTextColumn Header="Screened" Binding="{Binding ScreenSafetyFactor}" IsReadOnly="True" />
+                                <DataGridTextColumn Header="Displacement, mm" Binding="{Binding Displacement}" IsReadOnly="True" />
+                                <DataGridTextColumn Header="Print, h" Binding="{Binding PrintTime}" IsReadOnly="True" />
+                                <DataGridTextColumn Header="Filament, g" Binding="{Binding Filament}" IsReadOnly="True" />
+                                <DataGridTextColumn Header="Support, mm³" Binding="{Binding Support}" IsReadOnly="True" />
+                                <DataGridTextColumn Header="Contact, mm²" Binding="{Binding Contact}" IsReadOnly="True" />
+                                <DataGridTextColumn Header="Height, mm" Binding="{Binding Height}" IsReadOnly="True" />
+                                <DataGridTextColumn Header="Overhang, mm²" Binding="{Binding Overhang}" IsReadOnly="True" />
+                                <DataGridTextColumn Header="Rotation" Binding="{Binding RotationText}" IsReadOnly="True" />
+                                <DataGridTextColumn Header="State" Binding="{Binding State}" IsReadOnly="True" />
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </DockPanel>
+                </DockPanel>
+
+                <Grid>
+                    <!-- Everything is shown as it will be printed: Z up, the bed at the bottom. -->
+                    <hx:Viewport3DX x:Name="Viewport"
+                                    EffectsManager="{Binding EffectsManager}"
+                                    Camera="{Binding Camera}"
+                                    BackgroundColor="#FF1A1A19"
+                                    ModelUpDirection="0,0,1"
+                                    MSAA="Four"
+                                    ShowViewCube="True"
+                                    ShowCoordinateSystem="True"
+                                    PreviewMouseLeftButtonDown="Viewport_MouseDown"
+                                    PreviewMouseLeftButtonUp="Viewport_MouseUp">
+                        <hx:Viewport3DX.InputBindings>
+                            <!-- On top of Helix's own gestures (the right button turns, the wheel zooms): the middle button pans, as in the slicer. -->
+                            <MouseBinding Command="{x:Static hx:ViewportCommands.Pan}" Gesture="MiddleClick" />
+                        </hx:Viewport3DX.InputBindings>
+                        <hx:Viewport3DX.Style>
+                            <Style TargetType="hx:Viewport3DX">
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsClicking}" Value="True">
+                                        <Setter Property="Cursor" Value="Cross" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </hx:Viewport3DX.Style>
+                        <!-- A light at the camera, so every face in view is lit in its own colour. -->
+                        <hx:DirectionalLight3D Direction="{Binding Camera.LookDirection}" Color="#FFC8C8C8" />
+                        <hx:DirectionalLight3D Direction="-0.3,0.5,-1" Color="#FF505050" />
+                        <hx:AmbientLight3D Color="#FF303030" />
+
+                        <hx:LineGeometryModel3D Geometry="{Binding BedGrid}" Color="#FF383835" Thickness="1" IsHitTestVisible="False" />
+                        <!-- The model carries the colours of its interfaces; faces are picked by a ray of our own, not by Helix's hit test. -->
+                        <hx:MeshGeometryModel3D Geometry="{Binding ModelGeometry}" Material="{Binding ColouredMaterial}" IsHitTestVisible="False" />
+                        <hx:MeshGeometryModel3D Geometry="{Binding GlyphGeometry}" Material="{Binding ColouredMaterial}" IsHitTestVisible="False" />
+                        <hx:MeshGeometryModel3D Geometry="{Binding BeadGeometry}" Material="{Binding ColouredMaterial}" IsHitTestVisible="False" />
+                        <hx:LineGeometryModel3D Geometry="{Binding BeadLines}" Color="White" Thickness="1.5" IsHitTestVisible="False" />
+                        <hx:MeshGeometryModel3D Geometry="{Binding CellGeometry}" Material="{Binding ColouredMaterial}" IsHitTestVisible="False" />
+                        <!-- Coarse elements lie where the values are low and the cells dark, so outlines a little lighter than those show. -->
+                        <hx:LineGeometryModel3D Geometry="{Binding ElementLines}" Color="#FF898781" Thickness="0.8" DepthBias="-100" IsHitTestVisible="False" />
+                        <!-- The weakest layer line and the cell probed last. -->
+                        <hx:LineGeometryModel3D Geometry="{Binding MarkLines}" Color="White" Thickness="2" DepthBias="-200" IsHitTestVisible="False" />
+                        <!-- What stands on the bed in the compare view: it faces down, out of sight, so its rim is drawn. -->
+                        <hx:LineGeometryModel3D Geometry="{Binding ContactLines}" Color="#FF199E70" Thickness="3" DepthBias="-300" IsHitTestVisible="False" />
+                        <!-- The numbers of the compare view's copies. -->
+                        <hx:BillboardTextModel3D Geometry="{Binding LabelGeometry}" IsHitTestVisible="False" />
+                    </hx:Viewport3DX>
+
+                    <!-- The legend, top left. -->
+                    <Border Style="{StaticResource Overlay}" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="16" MaxWidth="290"
+                            Visibility="{Binding HasLegend, Converter={StaticResource Visible}}">
+                        <StackPanel>
+                            <TextBlock Text="{Binding LegendTitle}" Foreground="{StaticResource TextSecondaryBrush}" FontSize="12" TextWrapping="Wrap" />
+                            <ItemsControl ItemsSource="{Binding LegendEntries}" Margin="0,4,0,0">
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate>
-                                        <TextBlock Text="{Binding Text}" Foreground="White" />
+                                        <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                                            <Rectangle Width="12" Height="12" RadiusX="3" RadiusY="3" Fill="{Binding Swatch}" VerticalAlignment="Center" />
+                                            <TextBlock Text="{Binding Label}" Margin="9,0,0,0" />
+                                        </StackPanel>
                                     </DataTemplate>
                                 </ItemsControl.ItemTemplate>
                             </ItemsControl>
-                        </Grid>
+                            <Grid Height="{x:Static local:MainViewModel.LegendBarHeight}" Margin="0,10,0,8"
+                                  Visibility="{Binding HasLegendScale, Converter={StaticResource Visible}}">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="12" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <Rectangle Fill="{Binding LegendScale}" RadiusX="3" RadiusY="3" />
+                                <ItemsControl Grid.Column="1" ItemsSource="{Binding LegendTicks}" Margin="9,0,0,0" MinWidth="110">
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate>
+                                            <Canvas />
+                                        </ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
+                                    <ItemsControl.ItemContainerStyle>
+                                        <Style TargetType="ContentPresenter">
+                                            <Setter Property="Canvas.Top" Value="{Binding Top}" />
+                                        </Style>
+                                    </ItemsControl.ItemContainerStyle>
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding Text}" FontSize="12" />
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </Grid>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Where the camera looks from, top right. -->
+                    <Border Style="{StaticResource Overlay}" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="16" Padding="4"
+                            Visibility="{Binding HasModel, Converter={StaticResource Visible}}">
+                        <StackPanel Orientation="Horizontal">
+                            <Button Style="{StaticResource ViewButton}" local:Look.Icon="&#xE740;" Tag="fit" Click="CameraView_Click" ToolTip="Fit everything in view (F)" />
+                            <Border Width="1" Margin="3,5" Background="{StaticResource DividerBrush}" />
+                            <Button Style="{StaticResource ViewButton}" Content="Iso" Tag="iso" Click="CameraView_Click" ToolTip="From the front, the right and above" />
+                            <Button Style="{StaticResource ViewButton}" Content="Top" Tag="top" Click="CameraView_Click" ToolTip="From above, looking down on the bed" />
+                            <Button Style="{StaticResource ViewButton}" Content="Front" Tag="front" Click="CameraView_Click" ToolTip="From the front, along +Y" />
+                            <Button Style="{StaticResource ViewButton}" Content="Side" Tag="side" Click="CameraView_Click" ToolTip="From the right, along −X" />
+                        </StackPanel>
+                    </Border>
+
+                    <!-- The layers shown, right edge, as in the slicer. -->
+                    <local:LayerSlider HorizontalAlignment="Right" Margin="0,76,14,150" Maximum="{Binding LayerCount}" Lower="{Binding LayerLow}" Upper="{Binding LayerHigh}"
+                                       Visibility="{Binding HasLayers, Converter={StaticResource Visible}}" ToolTip="{Binding LayerText}" />
+
+                    <!-- What a click on the model does now, and the work under way, top middle. -->
+                    <StackPanel HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,16,0,0" MaxWidth="560">
+                        <Border Style="{StaticResource Overlay}" Padding="14,8,8,8" Margin="0,0,0,10" BorderBrush="#66ECEBE5"
+                                Visibility="{Binding IsClicking, Converter={StaticResource Visible}}">
+                            <DockPanel>
+                                <TextBlock DockPanel.Dock="Left" Text="&#xE7C9;" Style="{StaticResource Icon}" Margin="0,0,10,0" />
+                                <Button DockPanel.Dock="Right" Content="Done" Command="{Binding EndClickingCommand}" Margin="12,0,0,0" Padding="12,4" ToolTip="Stop picking (Esc)" />
+                                <TextBlock Text="{Binding ClickText}" TextWrapping="Wrap" VerticalAlignment="Center" />
+                            </DockPanel>
+                        </Border>
+                        <Border Style="{StaticResource Overlay}" Width="400" Visibility="{Binding IsWorking, Converter={StaticResource Visible}}">
+                            <StackPanel>
+                                <DockPanel>
+                                    <TextBlock DockPanel.Dock="Right" Text="{Binding WorkTime}" Foreground="{StaticResource TextSecondaryBrush}" FontSize="12" VerticalAlignment="Center" />
+                                    <TextBlock Text="{Binding WorkTitle}" FontWeight="SemiBold" />
+                                </DockPanel>
+                                <TextBlock Text="{Binding WorkStep}" Style="{StaticResource Hint}" Margin="0,3,0,10" TextTrimming="CharacterEllipsis" TextWrapping="NoWrap" />
+                                <ProgressBar Minimum="0" Maximum="1" Value="{Binding WorkDone, Mode=OneWay}" IsIndeterminate="{Binding WorkIsIndeterminate}" />
+                                <Button Content="Stop the sweep" local:Look.Icon="&#xE71A;" Command="{Binding CancelSweepCommand}" HorizontalAlignment="Right" Margin="0,10,0,0" Padding="10,4"
+                                        Visibility="{Binding IsSweeping, Converter={StaticResource Visible}}" ToolTip="Stops after the step at hand; what is done stays in the table" />
+                            </StackPanel>
+                        </Border>
                     </StackPanel>
-                </Border>
 
-                <!-- The cell clicked last, over the viewport so that showing it does not move the part. -->
-                <Border HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="12,0,12,12" Padding="12,10" CornerRadius="4" MaxWidth="460"
-                        Background="#E61A1A19" BorderBrush="#1AFFFFFF" BorderThickness="1"
-                        Visibility="{Binding HasProbe, Converter={StaticResource Visible}}">
-                    <TextBlock Text="{Binding ProbeText}" Foreground="White" TextWrapping="Wrap" />
-                </Border>
-            </Grid>
-
-            <!-- The comparison: the sweep's candidates as ranked, and the orientations solved by hand. -->
-            <DockPanel Grid.Row="2" Margin="8" Visibility="{Binding IsCompareView, Converter={StaticResource Visible}}">
-                <DockPanel DockPanel.Dock="Bottom" Margin="0,6,0,0">
-                    <Button Content="Open its result" Command="{Binding OpenCompareRowCommand}" Padding="10,4" DockPanel.Dock="Left" VerticalAlignment="Top"
-                            ToolTip="Shows the selected orientation's result in the views: its toolpath, its cells and the load case that governs it" />
-                    <TextBlock Style="{StaticResource Hint}" Margin="12,0,0,0" VerticalAlignment="Center"
-                               Text="Ranked by the lowest safety factor over the load cases, then the largest displacement, the print time, the filament and the support. The quick solve that screens every orientation refines only to elements of 2³ cells and reads the safety factor high: it decides which 3 are solved in full, whose numbers count. Those only screened rank after them." />
-                </DockPanel>
-                <DataGrid ItemsSource="{Binding CompareRows}" SelectedItem="{Binding SelectedCompareRow}" AutoGenerateColumns="False" CanUserAddRows="False"
-                          SelectionMode="Single" HeadersVisibility="Column" CanUserSortColumns="False" CanUserReorderColumns="False"
-                          GridLinesVisibility="Horizontal" HorizontalGridLinesBrush="#FFE1E0D9" MaxHeight="230" MouseDoubleClick="CompareRow_DoubleClick">
-                    <DataGrid.Columns>
-                        <DataGridTemplateColumn Header="Try">
-                            <DataGridTemplateColumn.CellTemplate>
-                                <DataTemplate>
-                                    <CheckBox IsChecked="{Binding IsTicked, UpdateSourceTrigger=PropertyChanged}" IsEnabled="{Binding CanTick}" HorizontalAlignment="Center" />
-                                </DataTemplate>
-                            </DataGridTemplateColumn.CellTemplate>
-                        </DataGridTemplateColumn>
-                        <DataGridTextColumn Header="" Binding="{Binding Label}" IsReadOnly="True" />
-                        <DataGridTextColumn Header="Rank" Binding="{Binding Rank}" IsReadOnly="True" />
-                        <DataGridTextColumn Header="Safety factor" Binding="{Binding SafetyFactor}" IsReadOnly="True" />
-                        <DataGridTextColumn Header="Screened" Binding="{Binding ScreenSafetyFactor}" IsReadOnly="True" />
-                        <DataGridTextColumn Header="Displacement, mm" Binding="{Binding Displacement}" IsReadOnly="True" />
-                        <DataGridTextColumn Header="Print, h" Binding="{Binding PrintTime}" IsReadOnly="True" />
-                        <DataGridTextColumn Header="Filament, g" Binding="{Binding Filament}" IsReadOnly="True" />
-                        <DataGridTextColumn Header="Support, mm³" Binding="{Binding Support}" IsReadOnly="True" />
-                        <DataGridTextColumn Header="Contact, mm²" Binding="{Binding Contact}" IsReadOnly="True" />
-                        <DataGridTextColumn Header="Height, mm" Binding="{Binding Height}" IsReadOnly="True" />
-                        <DataGridTextColumn Header="Overhang, mm²" Binding="{Binding Overhang}" IsReadOnly="True" />
-                        <DataGridTextColumn Header="Rotation" Binding="{Binding RotationText}" IsReadOnly="True" />
-                        <DataGridTextColumn Header="State" Binding="{Binding State}" IsReadOnly="True" />
-                    </DataGrid.Columns>
-                </DataGrid>
-            </DockPanel>
-
-            <Grid Grid.Row="2" Margin="8" Visibility="{Binding IsResultView, Converter={StaticResource Visible}}">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="Auto" />
-                </Grid.ColumnDefinitions>
-                <StackPanel Margin="0,0,16,0">
-                    <TextBlock Text="{Binding ResultSummary}" TextWrapping="Wrap" />
-                    <Border Background="#FFFDF3D7" BorderBrush="#FFFAB219" BorderThickness="1" CornerRadius="3" Padding="8,6" Margin="0,8,0,0"
-                            Visibility="{Binding HasResultWarning, Converter={StaticResource Visible}}">
+                    <!-- The cell clicked last, over the view so that showing it does not move the part: top right, clear of the layers. -->
+                    <Border Style="{StaticResource Overlay}" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,66,104,0" MaxWidth="430" Padding="14,10,6,12"
+                            Visibility="{Binding HasProbe, Converter={StaticResource Visible}}">
                         <DockPanel>
-                            <TextBlock Text="&#x26A0;" FontWeight="Bold" Margin="0,0,8,0" />
-                            <TextBlock TextWrapping="Wrap">
-                                <Run Text="Do not rely on these numbers." FontWeight="SemiBold" />
-                                <LineBreak />
-                                <Run Text="{Binding ResultWarning, Mode=OneWay}" />
-                            </TextBlock>
+                            <Button DockPanel.Dock="Right" Style="{StaticResource IconButton}" local:Look.Icon="&#xE711;" Command="{Binding ClearProbeCommand}"
+                                    VerticalAlignment="Top" Margin="8,-4,0,0" ToolTip="Close" />
+                            <StackPanel>
+                                <TextBlock Text="Probed" Foreground="{StaticResource TextMutedBrush}" FontSize="12" Margin="0,0,0,4" />
+                                <TextBlock Text="{Binding ProbeText}" TextWrapping="Wrap" LineHeight="18" />
+                            </StackPanel>
                         </DockPanel>
                     </Border>
-                </StackPanel>
-                <DataGrid Grid.Column="1" ItemsSource="{Binding Passes}" SelectedIndex="{Binding Pass}" AutoGenerateColumns="False" IsReadOnly="True"
-                          SelectionMode="Single" HeadersVisibility="Column" CanUserSortColumns="False" CanUserReorderColumns="False"
-                          GridLinesVisibility="Horizontal" HorizontalGridLinesBrush="#FFE1E0D9" MaxHeight="170" VerticalAlignment="Top"
-                          ToolTip="Select a pass to see the mesh and the stresses as they were after it">
-                    <DataGrid.Columns>
-                        <DataGridTextColumn Header="Pass" Binding="{Binding Pass}" />
-                        <DataGridTextColumn Header="Elements by size, bead cells first" Binding="{Binding Elements}" />
-                        <DataGridTextColumn Header="Unknowns" Binding="{Binding Unknowns}" />
-                        <DataGridTextColumn Header="Iterations" Binding="{Binding Iterations}" />
-                        <DataGridTextColumn Header="Safety factor" Binding="{Binding SafetyFactor}" />
-                        <DataGridTextColumn Header="Max von Mises, MPa" Binding="{Binding MaxVonMises}" />
-                        <DataGridTextColumn Header="Weakest spot lies in" Binding="{Binding PeakIn}" />
-                        <DataGridTextColumn Header="Time, s" Binding="{Binding Seconds}" />
-                    </DataGrid.Columns>
-                </DataGrid>
-            </Grid>
+
+                    <!-- How the mouse moves the view, bottom middle. -->
+                    <TextBlock Text="{Binding MouseHint}" Foreground="{StaticResource TextMutedBrush}" FontSize="12" HorizontalAlignment="Center" VerticalAlignment="Bottom"
+                               Margin="120,0,120,18" Visibility="{Binding HasModel, Converter={StaticResource Visible}}" />
+
+                    <!-- Nothing open yet. -->
+                    <Border Style="{StaticResource Overlay}" HorizontalAlignment="Center" VerticalAlignment="Center" Padding="32,26" MaxWidth="440"
+                            Visibility="{Binding HasModel, Converter={StaticResource Shown}, ConverterParameter=Not}">
+                        <StackPanel>
+                            <TextBlock Text="&#xE8E5;" Style="{StaticResource Icon}" FontSize="30" HorizontalAlignment="Center" Foreground="{StaticResource TextSecondaryBrush}" />
+                            <TextBlock Text="Open a part to start" FontSize="17" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,12,0,0" />
+                            <TextBlock Style="{StaticResource Hint}" TextAlignment="Center" Margin="0,6,0,0"
+                                       Text="An STL model, or a study saved before. Dropping the file on the window works too." />
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,18,0,0">
+                                <Button Style="{StaticResource PrimaryButton}" Content="Open model" Click="OpenModel_Click" />
+                                <Button Content="Open study" Click="OpenStudy_Click" Padding="16,8" Margin="8,0,0,0" />
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+                </Grid>
+            </DockPanel>
         </Grid>
-    </DockPanel>
+
+        <!-- ===== The status line ===== -->
+        <Border Grid.Row="2" Background="{StaticResource WindowBrush}" BorderBrush="{StaticResource DividerBrush}" BorderThickness="0,1,0,0" Padding="14,0" Height="28">
+            <DockPanel>
+                <TextBlock DockPanel.Dock="Right" Text="{Binding Caption}" Foreground="{StaticResource TextMutedBrush}" FontSize="12" VerticalAlignment="Center" Margin="16,0,0,0" />
+                <TextBlock Text="{Binding Status}" Foreground="{StaticResource TextSecondaryBrush}" FontSize="12" VerticalAlignment="Center"
+                           TextTrimming="CharacterEllipsis" ToolTip="{Binding Status}" />
+            </DockPanel>
+        </Border>
+    </Grid>
 </Window>

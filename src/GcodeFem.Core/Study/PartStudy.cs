@@ -86,6 +86,9 @@ public sealed class PartStudy
     public List<PartInterface> Interfaces { get; } = [];
     public List<StudyLoadCase> LoadCases { get; } = [];
 
+    /// <summary>Which faces an orientation sweep tries.</summary>
+    public SweepSettings Sweep { get; set; } = new();
+
     /// <summary>
     /// Whether the picked faces still refer to <paramref name="mesh"/>. If not, <see cref="DropFaces"/>
     /// keeps everything but the faces, which then have to be picked again.

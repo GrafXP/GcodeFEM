@@ -32,6 +32,15 @@ public static class MaterialFile
 
     public static void Save(Material material, string path)
     {
+        var json = ToJson(material);
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
+        File.WriteAllText(path, json);
+        material.Path = Path.GetFullPath(path);
+    }
+
+    /// <summary>The material as its file holds it.</summary>
+    public static string ToJson(Material material)
+    {
         if (material.Problems() is { Count: > 0 } problems)
             throw new InvalidOperationException($"The material cannot be saved: {string.Join(" ", problems)}");
 
@@ -47,17 +56,18 @@ public static class MaterialFile
             material.Values.ToDictionary(
                 pair => pair.Key.Key(),
                 pair => new ValueDto(pair.Value.Value, pair.Value.Spread, pair.Key.Unit(), Text(pair.Value.Method), Text(pair.Value.Source), pair.Value.Page, Text(pair.Value.Assumed))));
-        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
-        File.WriteAllText(path, JsonSerializer.Serialize(file, Options) + Environment.NewLine);
-        material.Path = Path.GetFullPath(path);
+        return JsonSerializer.Serialize(file, Options) + Environment.NewLine;
     }
 
-    public static Material Load(string path)
+    public static Material Load(string path) => FromJson(File.ReadAllText(path), path);
+
+    /// <summary>A material from the text of its file; <paramref name="path"/> is where it counts as kept, and names it in the messages.</summary>
+    public static Material FromJson(string json, string path)
     {
         FileDto file;
         try
         {
-            file = JsonSerializer.Deserialize<FileDto>(File.ReadAllText(path), Options) ?? throw new InvalidDataException($"'{path}' is empty.");
+            file = JsonSerializer.Deserialize<FileDto>(json, Options) ?? throw new InvalidDataException($"'{path}' is empty.");
         }
         catch (JsonException ex)
         {

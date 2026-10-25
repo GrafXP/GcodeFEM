@@ -23,7 +23,9 @@ public static class StudyFile
         Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
     };
 
-    sealed record FileDto(int Format, ModelDto Model, PrintDto Print, int? MeshLevel, List<InterfaceDto> Interfaces, List<LoadCaseDto> LoadCases);
+    sealed record FileDto(int Format, ModelDto Model, PrintDto Print, int? MeshLevel, List<InterfaceDto> Interfaces, List<LoadCaseDto> LoadCases, SweepDto? Sweep = null);
+
+    sealed record SweepDto(float? MinContact, int? Count, bool? Spins);
 
     sealed record ModelDto(string File, string Hash);
 
@@ -37,6 +39,15 @@ public static class StudyFile
 
     public static void Save(PartStudy study, string path)
     {
+        var folder = Path.GetDirectoryName(Path.GetFullPath(path))!;
+        var json = ToJson(study, folder);
+        Directory.CreateDirectory(folder);
+        File.WriteAllText(path, json);
+    }
+
+    /// <summary>The study as the file holds it, with the model named by its path from <paramref name="folder"/>.</summary>
+    public static string ToJson(PartStudy study, string folder)
+    {
         var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var item in study.Interfaces)
         {
@@ -44,24 +55,27 @@ public static class StudyFile
             if (!names.Add(item.Name)) throw new InvalidOperationException($"Two interfaces are called '{item.Name}'. Give each its own name.");
         }
 
-        var folder = Path.GetDirectoryName(Path.GetFullPath(path))!;
         var file = new FileDto(
             Format,
             new ModelDto(Path.GetRelativePath(folder, study.ModelPath).Replace('\\', '/'), study.GeometryHash),
             new PrintDto([study.Rotation.X, study.Rotation.Y, study.Rotation.Z], study.Process, study.Filament),
             study.MeshLevel,
             [.. study.Interfaces.Select(item => new InterfaceDto(item.Name, item.Kind, TriangleRanges.Format(item.Triangles), item.Kind == InterfaceKind.BoltHole ? item.Axial : null))],
-            [.. study.LoadCases.Select(loadCase => new LoadCaseDto(loadCase.Name, study.Interfaces.Where(item => item.Kind.IsLoad()).ToDictionary(item => item.Name, item => ToDto(item.Kind, loadCase.Of(item)))))]);
-        Directory.CreateDirectory(folder);
-        File.WriteAllText(path, JsonSerializer.Serialize(file, Options));
+            [.. study.LoadCases.Select(loadCase => new LoadCaseDto(loadCase.Name, study.Interfaces.Where(item => item.Kind.IsLoad()).ToDictionary(item => item.Name, item => ToDto(item.Kind, loadCase.Of(item)))))],
+            study.Sweep == new SweepSettings() ? null : new SweepDto(study.Sweep.MinContact, study.Sweep.Count, study.Sweep.Spins ? true : null));
+        return JsonSerializer.Serialize(file, Options);
     }
 
-    public static PartStudy Load(string path)
+    public static PartStudy Load(string path) => FromJson(File.ReadAllText(path), Path.GetDirectoryName(Path.GetFullPath(path))!, path);
+
+    /// <summary>A study from the text of its file; its model is named by its path from <paramref name="folder"/>.</summary>
+    /// <param name="path">Where the text comes from, for the messages.</param>
+    public static PartStudy FromJson(string json, string folder, string path)
     {
         FileDto file;
         try
         {
-            file = JsonSerializer.Deserialize<FileDto>(File.ReadAllText(path), Options) ?? throw new InvalidDataException($"'{path}' is empty.");
+            file = JsonSerializer.Deserialize<FileDto>(json, Options) ?? throw new InvalidDataException($"'{path}' is empty.");
         }
         catch (JsonException ex)
         {
@@ -72,12 +86,13 @@ public static class StudyFile
 
         var study = new PartStudy
         {
-            ModelPath = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(Path.GetFullPath(path))!, model)),
+            ModelPath = Path.GetFullPath(Path.Combine(folder, model)),
             GeometryHash = file.Model.Hash ?? "",
             Rotation = file.Print?.Rotation is [var x, var y, var z] ? new Vector3(x, y, z) : Vector3.Zero,
             Process = file.Print?.Process,
             Filament = file.Print?.Filament,
             MeshLevel = file.MeshLevel,
+            Sweep = file.Sweep is { } sweep ? new SweepSettings(sweep.MinContact, sweep.Count, sweep.Spins ?? false) : new SweepSettings(),
         };
         foreach (var item in file.Interfaces ?? [])
             study.Interfaces.Add(new PartInterface { Name = item.Name, Kind = item.Kind, Triangles = TriangleRanges.Parse(item.Triangles ?? ""), Axial = item.Axial ?? true });

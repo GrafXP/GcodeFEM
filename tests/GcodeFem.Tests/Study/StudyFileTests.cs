@@ -80,6 +80,25 @@ public sealed class StudyFileTests : IDisposable
     }
 
     [Fact]
+    public void The_sweep_settings_are_saved_only_once_set()
+    {
+        var path = Path.Combine(folder, "bracket.study.json");
+        var study = Sample();
+
+        StudyFile.Save(study, path);
+        Assert.DoesNotContain("sweep", File.ReadAllText(path));
+        Assert.Equal(new SweepSettings(), StudyFile.Load(path).Sweep);
+
+        study.Sweep = new SweepSettings(MinContact: 50, Count: 4, Spins: true);
+        StudyFile.Save(study, path);
+        Assert.Equal(new SweepSettings(50, 4, true), StudyFile.Load(path).Sweep);
+
+        study.Sweep = new SweepSettings(MinContact: 12.5f);
+        StudyFile.Save(study, path);
+        Assert.Equal(new SweepSettings(12.5f), StudyFile.Load(path).Sweep);
+    }
+
+    [Fact]
     public void Two_interfaces_of_one_name_cannot_be_saved()
     {
         var study = Sample();

@@ -196,6 +196,31 @@
                     </StackPanel>
                 </GroupBox>
 
+                <GroupBox Header="Orientation sweep" Margin="0,8,0,0" Padding="6,4" Visibility="{Binding HasModel, Converter={StaticResource Visible}}">
+                    <StackPanel>
+                        <!-- Which faces the sweep tries; both numbers are saved with the study, and neither has a built-in value. -->
+                        <DockPanel Style="{StaticResource Field}" ToolTip="A face that touches the bed with less than this is not tried. There is no built-in value: until one is typed, every face with contact is shown and the sweep does not start.">
+                            <TextBlock Text="Smallest contact" Width="110" VerticalAlignment="Center" />
+                            <TextBlock DockPanel.Dock="Right" Text="mm²" VerticalAlignment="Center" Margin="4,0,0,0" />
+                            <TextBox Text="{Binding MinContactText, UpdateSourceTrigger=PropertyChanged}" />
+                        </DockPanel>
+                        <DockPanel Style="{StaticResource Field}" ToolTip="Of the faces left, the largest this many are tried. Empty: all of them.">
+                            <TextBlock Text="How many, largest" Width="110" VerticalAlignment="Center" />
+                            <TextBox Text="{Binding CountText, UpdateSourceTrigger=PropertyChanged}" />
+                        </DockPanel>
+                        <CheckBox Content="Also spun on the bed by 45° and 90°" IsChecked="{Binding Spins}" Margin="0,3"
+                                  ToolTip="The walls follow the part, but the sparse infill and the top and bottom skins follow the bed's axes." />
+                        <TextBlock Text="{Binding SweepText}" Style="{StaticResource Hint}" />
+                        <WrapPanel Margin="0,6,0,0">
+                            <Button Content="Show the faces" Command="{Binding PreviewFacesCommand}" Padding="8,3" Margin="0,0,4,4"
+                                    ToolTip="Lists the faces as the part lies now and shows the part laid on each, side by side. Tick off those not to try, in the table or by a click on the copy." />
+                            <Button Content="Start the sweep" Command="{Binding StartSweepCommand}" Padding="8,3" Margin="0,0,4,4"
+                                    ToolTip="Slices each ticked orientation and solves it quickly in every load case, then solves the best 3 in full and ranks them all" />
+                            <Button Content="Stop" Command="{Binding CancelSweepCommand}" Padding="8,3" Margin="0,0,0,4" ToolTip="Stops after the step at hand; what is done stays in the table" />
+                        </WrapPanel>
+                    </StackPanel>
+                </GroupBox>
+
                 <GroupBox Header="Layers" Margin="0,8,0,0" Padding="6,4" Visibility="{Binding HasLayers, Converter={StaticResource Visible}}">
                     <StackPanel>
                         <TextBlock Text="{Binding LayerText}" TextWrapping="Wrap" />
@@ -272,6 +297,9 @@
                              IsChecked="{Binding View, Converter={StaticResource Is}, ConverterParameter=Cells}" />
                 <RadioButton Content="Results" Style="{StaticResource Tab}" IsEnabled="{Binding HasResult}"
                              IsChecked="{Binding View, Converter={StaticResource Is}, ConverterParameter=Results}" />
+                <RadioButton Content="Compare" Style="{StaticResource Tab}" IsEnabled="{Binding HasModel}"
+                             IsChecked="{Binding View, Converter={StaticResource Is}, ConverterParameter=Compare}"
+                             ToolTip="The faces the part can lie on, side by side, and what each came to: the sweep's and those solved by hand" />
             </StackPanel>
 
             <Grid Grid.Row="1">
@@ -318,6 +346,10 @@
                     <hx:LineGeometryModel3D Geometry="{Binding ElementLines}" Color="#FF898781" Thickness="0.8" DepthBias="-100" IsHitTestVisible="False" />
                     <!-- The weakest layer line and the cell probed last. -->
                     <hx:LineGeometryModel3D Geometry="{Binding MarkLines}" Color="White" Thickness="2" DepthBias="-200" IsHitTestVisible="False" />
+                    <!-- What stands on the bed in the compare view: it faces down, out of sight, so its rim is drawn. -->
+                    <hx:LineGeometryModel3D Geometry="{Binding ContactLines}" Color="#FF199E70" Thickness="3" DepthBias="-300" IsHitTestVisible="False" />
+                    <!-- The numbers of the compare view's copies. -->
+                    <hx:BillboardTextModel3D Geometry="{Binding LabelGeometry}" IsHitTestVisible="False" />
                 </hx:Viewport3DX>
 
                 <Border HorizontalAlignment="Right" VerticalAlignment="Top" Margin="12,12,12,0" Padding="12,10" CornerRadius="4" MaxWidth="300"
@@ -370,6 +402,42 @@
                     <TextBlock Text="{Binding ProbeText}" Foreground="White" TextWrapping="Wrap" />
                 </Border>
             </Grid>
+
+            <!-- The comparison: the sweep's candidates as ranked, and the orientations solved by hand. -->
+            <DockPanel Grid.Row="2" Margin="8" Visibility="{Binding IsCompareView, Converter={StaticResource Visible}}">
+                <DockPanel DockPanel.Dock="Bottom" Margin="0,6,0,0">
+                    <Button Content="Open its result" Command="{Binding OpenCompareRowCommand}" Padding="10,4" DockPanel.Dock="Left" VerticalAlignment="Top"
+                            ToolTip="Shows the selected orientation's result in the views: its toolpath, its cells and the load case that governs it" />
+                    <TextBlock Style="{StaticResource Hint}" Margin="12,0,0,0" VerticalAlignment="Center"
+                               Text="Ranked by the lowest safety factor over the load cases, then the largest displacement, the print time, the filament and the support. The quick solve that screens every orientation refines only to elements of 2³ cells and reads the safety factor high: it decides which 3 are solved in full, whose numbers count. Those only screened rank after them." />
+                </DockPanel>
+                <DataGrid ItemsSource="{Binding CompareRows}" SelectedItem="{Binding SelectedCompareRow}" AutoGenerateColumns="False" CanUserAddRows="False"
+                          SelectionMode="Single" HeadersVisibility="Column" CanUserSortColumns="False" CanUserReorderColumns="False"
+                          GridLinesVisibility="Horizontal" HorizontalGridLinesBrush="#FFE1E0D9" MaxHeight="230" MouseDoubleClick="CompareRow_DoubleClick">
+                    <DataGrid.Columns>
+                        <DataGridTemplateColumn Header="Try">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <CheckBox IsChecked="{Binding IsTicked, UpdateSourceTrigger=PropertyChanged}" IsEnabled="{Binding CanTick}" HorizontalAlignment="Center" />
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+                        <DataGridTextColumn Header="" Binding="{Binding Label}" IsReadOnly="True" />
+                        <DataGridTextColumn Header="Rank" Binding="{Binding Rank}" IsReadOnly="True" />
+                        <DataGridTextColumn Header="Safety factor" Binding="{Binding SafetyFactor}" IsReadOnly="True" />
+                        <DataGridTextColumn Header="Screened" Binding="{Binding ScreenSafetyFactor}" IsReadOnly="True" />
+                        <DataGridTextColumn Header="Displacement, mm" Binding="{Binding Displacement}" IsReadOnly="True" />
+                        <DataGridTextColumn Header="Print, h" Binding="{Binding PrintTime}" IsReadOnly="True" />
+                        <DataGridTextColumn Header="Filament, g" Binding="{Binding Filament}" IsReadOnly="True" />
+                        <DataGridTextColumn Header="Support, mm³" Binding="{Binding Support}" IsReadOnly="True" />
+                        <DataGridTextColumn Header="Contact, mm²" Binding="{Binding Contact}" IsReadOnly="True" />
+                        <DataGridTextColumn Header="Height, mm" Binding="{Binding Height}" IsReadOnly="True" />
+                        <DataGridTextColumn Header="Overhang, mm²" Binding="{Binding Overhang}" IsReadOnly="True" />
+                        <DataGridTextColumn Header="Rotation" Binding="{Binding RotationText}" IsReadOnly="True" />
+                        <DataGridTextColumn Header="State" Binding="{Binding State}" IsReadOnly="True" />
+                    </DataGrid.Columns>
+                </DataGrid>
+            </DockPanel>
 
             <Grid Grid.Row="2" Margin="8" Visibility="{Binding IsResultView, Converter={StaticResource Visible}}">
                 <Grid.ColumnDefinitions>

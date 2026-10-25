@@ -9,7 +9,8 @@ namespace GcodeFem.Core.Fem;
 /// <list type="bullet">
 /// <item>A solve takes about root level + 1 passes: each refines one level until the hotspots
 /// are bead cells (4 for the bracket and 5 for the cube at level 3, one at level 0). If it goes
-/// on, one more is expected.</item>
+/// on, one more is expected. A solve that stops at coarser elements (a sweep's screening) takes
+/// as many fewer.</item>
 /// <item>A pass takes a fixed part (refining, building the mesh, assembling) plus a time per
 /// unknown. That time is read off the last pass big enough to show it; before one has run it
 /// is a guess, and the estimate settles as the passes come in.</item>
@@ -38,7 +39,7 @@ public sealed class SolveEstimate
     readonly Lock gate = new();
     readonly List<(int Dofs, double Seconds)> passes = [];
     AdaptiveSolving? solving;
-    int rootLevel = -1, beadDofs;
+    int rootLevel = -1, finestLevel, beadDofs;
     double passesEnd, lastDone;
     bool finished;
 
@@ -54,7 +55,7 @@ public sealed class SolveEstimate
     {
         lock (gate)
         {
-            (solving, rootLevel, beadDofs) = (pass, pass.RootLevel, pass.BeadDofs);
+            (solving, rootLevel, finestLevel, beadDofs) = (pass, pass.RootLevel, pass.FinestLevel, pass.BeadDofs);
         }
     }
 
@@ -88,7 +89,7 @@ public sealed class SolveEstimate
             if (rootLevel < 0) return new WorkProgress("building the mesh", elapsed);
 
             var current = passes.Count;
-            var expected = Math.Max(rootLevel + 1, current + 1);
+            var expected = Math.Max(rootLevel - finestLevel + 1, current + 1);
             var growth = passes.Count >= 2 ? Math.Clamp((double)passes[^1].Dofs / passes[^2].Dofs, 1.5, 5) : 4;
             var dofs = solving is { } now ? now.Dofs : Math.Min(beadDofs, (int)(passes[^1].Dofs * growth));
 

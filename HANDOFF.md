@@ -793,7 +793,8 @@ Read [PLAN.md](PLAN.md) for the design. This file only tracks where things stand
 - M8 and the progress bar are committed as `2b6fd12` and pushed on **`m3-octree`**, again without
   `materials/tds/` (Martin asked to "commit all"; the PDFs stay out until he decides about them).
 - Before any change: 316 tests green.
-- **M8b is not committed yet.**
+- M8b was committed as `dc74f34` and pushed on **`m3-octree`** (Martin: "commit all and push, then
+  implement m9"), again without `materials/tds/`. **M9 is not committed yet.**
 
 ### M8b results on the print lines: done
 - `Core/Fem/Voxelizer.Walk`: the cells of a bead's centre line, cut exactly at the cell boundaries
@@ -859,17 +860,194 @@ Read [PLAN.md](PLAN.md) for the design. This file only tracks where things stand
 - The probe tests every piece shown, one by one: fine at 100k pieces, slow at millions.
 - Switching a line type off is a view only; the solve and its numbers include those lines.
 
+### M9 orientation study: done
+- `Core/Geometry`:
+  - `ConvexHull`: quickhull in doubles. A point within a millionth of the points' extent of a facet
+    counts as on it.
+  - `LayFaces.Find`: hull planes (facets within 1° merged) and the model's contact with each (its
+    triangles within 0.05 mm of the plane, facing its way within 1°), largest first.
+- `Core/Study`:
+  - `SweepSettings` (smallest contact, count, spins; saved in the study file as `"sweep"`, left out
+    until set) and `OrientationCandidates.Find`: the faces laid down by `LayFlat` from a starting
+    rotation, spun, with height and overhang area (`OverhangArea`, the process's support threshold).
+  - `PrintedPart` (slice → toolpath → clock → cells) and `PartSolution.Solve` (one load case on a
+    printed part): the one pipeline that the app, the sweep and the tests use.
+  - `OrientationSweep`: screens every candidate in every load case, solves the best 3 in full, ranks
+    (`Ranked`), reports progress (`Now`) and stops between steps when cancelled. A candidate that
+    fails is noted (`SweepEntry.Error`) and the sweep goes on. `OrientationSweep.Slicing` makes
+    the slicer's part.
+- `AdaptiveOptions.FinestLevel` (0 by default): no element below 2^level cells. The sweep screens at
+  1. `AdaptiveSolving.FinestLevel` lets `SolveEstimate` expect the shorter solve.
+- `GlyphMesh.Append`.
+- App:
+  - `PrintJob` wraps a `PrintedPart`, `SolvedJob` a `PartSolution`. Slice and solve end in
+    `ShowPrint` and `ShowSolution`, which opening a compared orientation uses as well.
+  - `MainViewModel.Sweep.cs`: `CompareRow` (a candidate or a solve by hand, with what came of it),
+    the sweep's settings, the candidates (`RefreshCandidates`, keeping ticks and results of an
+    orientation listed again), `StartSweepAsync`, `CancelSweep`, `OpenCompareRow`, clicks on copies.
+  - The **Compare** tab (`ViewMode.Compare`): `CompareLayout` puts each copy on a patch of its own;
+    `SceneBuilder.Compare` draws copies or their safety-factor maps, numbers (`BillboardText3D`),
+    contact rims (`ContactLines`), patches and the selected one in white.
+  - The **Orientation sweep** panel on the left, and the table with "Open its result" under the
+    compare view. A solve by hand adds a row.
+  - Command line: `--view compare`, `--min-contact`, `--count`, `--spins`, `--untick "3,4"`,
+    `--click` on copies, `--sweep`, `--row n`, `--open n`, `--compare` (end on the compare view).
+- CLI: `gcodefem sweep` (faces, then the sweep and the ranking; `--check` solves all in full and
+  compares orders; `--screen-level`, `--best`, `--save`, `--list`). `adapt`/`solve` unchanged;
+  `FemCommands.Problem` as in M8b.
+- Tests: 351 green, now about 2 min 20 s (the sweeps add a minute); 15 are new. They cover the hull (a box, a sphere, finely meshed flat sides,
+  nothing to span), the faces and candidates (cube, bracket, the corner plane, a face 0.03 mm off,
+  spins, overhangs), the study file's sweep settings, the sweep on the samples' cube with a stand-in
+  slicer (screening, the full solve of the best, a refusing slicer, ranking, progress, cancelling),
+  the ranking rules, and the bracket swept through Bambu Studio.
+- Checked:
+
+  | Check | How |
+  | --- | --- |
+  | The bracket's six faces: caps 661 mm², outer sides 320, ends 80; heights, overhangs, rotations | `gcodefem sweep --study samples\bracket40_holes.study.json` |
+  | All six in full against the screening at three levels (PLAN.md §11): only screening to 2³ ranks as the full solves | `… --min-contact 50 --check [--screen-level 3\|2\|1]` |
+  | The sweep: 55 s from the cache, #1, #2, #6 solved in full (1.58, 1.54, 1.05), #3, #5, #4 screened; 2.1 GB peak with all six in full | `… --min-contact 50` |
+  | The preview: copies on patches, numbers, contact rims, interfaces, a copy left out, a row selected | `GcodeFem.App --study samples\bracket40_holes.study.json --view compare --min-contact 50 --untick 2 --row 4 --screenshot out.png` |
+  | The panel before a smallest contact is typed: the sweep cannot start | `… --view compare --look -0.4,1,-1.4 --size 1400x1350 …` |
+  | The sweep in the app: the bar at 12 s ("about 48 s left", candidate 3 of 6), then the ranked table and the safety-factor maps (69 s) | `… --view compare --min-contact 50 --sweep --busy-screenshot busy.png --busy-after 12 --row 1 …` |
+  | A row opened in the results view: #6, rotation 0, 90, 0, its full solve of 'Pull sideways' | `… --sweep --open 6 --colour safetyfactor …` |
+  | A solve by hand in the table: tilted 45°, SF 1.12, 'Pull sideways' only | `… --rot 45,0,0 --view results --compare …` |
+
+- Not checked by hand: the mouse on the compare view (a click on a copy ticks it; the scripted
+  `--click` goes through the same `PickAt`), double-clicking a row, Stop in the middle of a sweep
+  (the cancelling is tested in Core), and the settings typed into the panel while the compare view
+  is open.
+
+### What M9 found
+- **The coarse pass alone does not rank the bracket's faces right**, nor does one more pass
+  (PLAN.md §11 has the table). It reads the upright sides much higher than the ends. Their layers
+  lie differently against the 8³ elements, and that is what differs from candidate to candidate.
+  Screened down to elements of 2³ cells it ranks all six as the full solves do. That costs 3.5 s a
+  candidate against 1.3 s, still a third of a full solve.
+- **#3 and #5 are near ties** (screened 1.236 both; in full 0.93 and 0.96). The ranking breaks the
+  tie by displacement and print time, so the table puts #3 before #5 where the full solves put #5
+  first. Neither is solved in full by default.
+- **Slices of the bracket take under a second each** when not cached; the screening's solves are
+  the cost.
+- **Lying flat as modelled is best** (SF 1.58), flipped is nearly as good (1.54; its layers run the
+  same way). Of the standing ones, the bolted leg's end (#6, 1.05) beats the tip's end (#5, 0.96)
+  and the outer sides (0.93, 0.87). Why the ends do better than the sides was not looked into.
+- **The sweep keeps every candidate's print and governing solution**, so that any row can be
+  opened: 2.1 GB peak with the bracket's six solved in full, the solver's own peak included.
+
+### After M9: a sweep of Martin's TPU part
+- Martin swept `C:\temp\025856.study.json` (a 27 × 22 × 42 mm part in TPU for AMS, 0.12mm Normal,
+  every bead cell, 141 N on a pin) from its rotation 0, 45, 0. Two of five candidates failed:
+  "The slicer changed the part's size or orientation". None had been solved in full.
+- **Bambu Studio's arrange turns a part to the smallest box around its footprint** unless told not
+  to. The two that failed lay on a side, spun 45° on the bed (the shortest turn from 0, 45, 0), and
+  came back turned by 31.07°. That turn is in the build item of the exported 3mf; result.json's
+  box was the part's box turned (52.2 × 44.7 against 46.4 × 24.2). So the size check was right to
+  refuse it. Axis-aligned parts are not turned, which is why M1 never saw it. A spun box (30°)
+  was turned straight the same way. With `--arrange` left out, the part is arranged and turned
+  all the same; `--arrange 0` leaves it where the STL has it, off the plate.
+- Fixed: `--allow-rotations=0` (the option is a flag: `--allow-rotations 0` reads "0" as an input
+  file). `BambuSlicer.TurnOnPlate` reads the turn from the 3mf; a slice with a turn is refused, and
+  a cached one is sliced again. A half turn keeps the box's size and would pass the size check.
+  Slices in the cache from before keep their key; those of axis-aligned parts show no turn.
+- **The sweep screened at level 0 too**, because the study solves every bead cell, so each
+  screening was a full solve, and the full solves would have repeated them. Screening now uses the
+  octree whatever the study's level; a screening that ran at level 0 (a small part) counts as the
+  full solve; the best three are chosen by the screening alone (`OrientationSweep.Order`).
+- The slicer's warning (floating regions, a floating cantilever: no support in this process) is
+  now in the table's State and in `gcodefem sweep`'s lines.
+- Swept again: all five slice; #3 and #4, the two that had failed, rank first in full (SF 0.051
+  and 0.032), then #1 (0.027); #5 and #2 screened. Screening 12–25 s a candidate; the full solves
+  at level 0 about 2 min each, 7 min in all, 4 GB peak.
+- **The numbers are the study's, not a fault**: 141 N on a TPU part that starts to break at about
+  3 N (SF 0.02–0.05), so the linear displacements (40–67 mm) are far past where they mean anything.
+  Its two load cases are the same (141 N along X), which doubles every solve.
+- Tests: 355 green (about 2 min 25 s); 4 are new. The 3mf's turn read for three matrices; a box
+  spun 30° sliced unturned (it fails without the flag: checked by slicing it the old way), and a
+  sweep of that box, each screening the full solve.
+
+### Open items from M9
+- A sweep of many candidates on a big part would hold many octrees: the screened ones' could be
+  dropped and solved again when opened.
+- Mirror-alike faces are swept twice (PLAN.md §11): the bracket's caps differ only in the side the
+  first layer is on.
+- The candidates are listed from how the part lay when they were first shown; "Show the faces"
+  lists them again from the rotation fields. Changing the process does not update the overhangs
+  until then.
+- The ticks are not saved with the study; the smallest contact, the count and the spins are.
+- Labels of the back row can hide behind tall copies in front, from the camera's starting angle.
+- Each load case is solved on its own, twice per candidate here (the M5 item below).
+
+## 2026-10-24 — session 9, on the desktop
+
+- Before any change: M9 still not committed; the work below sits on top of it.
+- Martin asked why `C:	emp856_sweep.study.json` (the TPU part from the sweep, lying on its side,
+  rotation 90, 0, 45) reads SF 0.05 when the load runs along the layer lines, and asked for results to be
+  saved with the study for diagnosis.
+
+### Results saved with the study: done
+- `Core/Study/ResultFile`: `part.results.zip` beside `part.study.json` (PLAN.md §10). `Save(path, model,
+  part, solution, summary)`, `ReadHeader`, `Load` (rebuilds `PrintedPart` and `PartSolution`), `Mismatch`
+  (why a saved result is not one of a study, or null), `BesideStudy`.
+  - The octree is grown again from the saved leaves (`OctreeMesh` sorts its leaves, so the same leaves
+    give the same nodes); stresses and failure come from the saved displacements and the saved material.
+  - A slice read back has its G-code in the zip: `SliceResult.Directory` is the zip, and saving it again
+    copies the G-code from there.
+- `PartSolution.Study`: the study as it was solved. `PrintedPart.Read(slice, toolpath)`.
+  `StudyFile.ToJson/FromJson`, `MaterialFile.ToJson/FromJson`.
+- App: **Save study** also writes the result on screen, if it is one of the study as saved (else the status
+  says why not). **Open study** (`OpenStudyAsync`) shows the saved result when it still fits, with the
+  progress bar; else the status says why it was left out. `--saved` shows it from the command line instead
+  of slicing and solving.
+- CLI: `gcodefem results solve <study>` (slices and solves one load case as the app does, saves beside the
+  study or `--out`), `gcodefem results show <zip or study>` (`--top`, `--by`, `--feature`, `--box`, `--cell`,
+  `--at`, `--along … --steps`).
+- Tests: 362 green (about 2 min 10 s); 7 new (round trip on the samples' cube at level 3 with 3 passes, saving again what was read,
+  the names, what counts for a study, the turn a sweep candidate is saved with, damaged files, another model).
+- Checked:
+
+  | Check | How |
+  | --- | --- |
+  | Martin's TPU part: solved, saved (4.2 MB, 0.2 s), read and rebuilt in 0.8 s, SF 0.051 as solved | `gcodefem results solve C:	emp856_sweep.study.json --out …`, `gcodefem results show …` |
+  | The app opens a copy of the study with the result beside it: the same summary and picture as Martin's screenshot, 4.6 s with the app's start | `GcodeFem.App --study …856_sweep.study.json --saved --view results --colour safetyfactor --on lines --screenshot out.png` |
+  | Saved again from the app (G-code from the first zip), read back the same | `… --saved --view results --save-study …
+esaved.study.json` |
+  | A study whose load changed: the result is not opened, and the status says why | the same with the force edited in the study |
+
+### What the TPU part on its side says (Martin's question)
+- **The beam behaves as expected**: it is a 3 × 8 mm strip (z 7–15 mm on its side) and 141 N pushes across
+  its 3 mm, about 20 mm out. By hand that is 237 MPa at the root (SF ≈ 0.09 against 22.4 MPa). Along the
+  beam the outer walls carry σ11 along their lines, tension on one side and compression on the other, and
+  "lines break" governs: SF 0.107 4 mm from the root, 0.14–0.19 in the middle, where beam theory gives
+  ~140 MPa and the cells 112–150.
+- **0.05 comes from the junction with the 3 mm plate**, held over its whole back face: the sharp inside
+  corner (a stress singularity, so the number falls further with finer cells), the walls turning round
+  the corner (lines up to 27° off the stress, so shear across the bead joints: "beads pull apart"), and
+  the 8 mm tall beam feeding into a 22 mm tall plate, so the load spreads up and down across the layer
+  lines right at the beam's top and bottom (the weakest layer lines are under layers 57 and 129, z 6.8 and
+  15.4). Cells there have all three normal stresses large and tensile.
+- **Not the assumed ν 0.48**: solved with 0.40 and 0.33, the SF is 0.045 and 0.044, at the same corner.
+  ν 0.48 does make the solver slow: ILU(0) stalls and Gauss–Seidel takes 613 iterations (52 s), against 61–98
+  iterations (7–11 s) at 0.33–0.40.
+- **The whole beam shows "breaks"** because the load is 20 × what the part holds: everything stressed
+  above 5 % of the peak is under SF 1. Of the sweep's candidates this side ranked first (0.051), against the
+  other side (0.032, the pin's ear then near the bed) and the flange's end (0.027); the mount face down
+  (0, 45, 0, the study's start) was not among them.
+- The bearing load's applied force is 1.5° off: (102.5, 97.4, 0) N for (100, 100, 0). The cosine pressure is
+  summed over the cells' steps and only scaled along its own sum (`Assembler`), so its direction follows
+  the steps. Small, but it could be scaled to the force exactly.
+
+### Open items from session 9
+- The sweep's candidates are not saved with the study, only the result on screen; neither is the compare
+  table.
+- A results file holds one load case: the one on screen.
+- The bearing load's direction (above).
+- `Mismatch` does not see an edited material file: the result keeps the material it was solved with,
+  which the summary names.
+
 ## Next
-- M9 orientation study: compare orientations by the safety factor M8 gives (and deflection,
-  print time, filament), manual and as a sweep that screens on the coarse pass and refines
-  the best 3 (PLAN.md §11). The coarse pass reads the safety factor high (pass 1 of the
-  bracket: 3.35 against 1.58), so screening must rank, not judge.
-  - Martin amended it on 2026-10-23. The candidates are the faces the part can be laid on,
-    as in Bambu Studio: planes of the convex hull whose contact with the bed is at least an
-    area the user types, and of those the largest as many as the user types (no built-in
-    value for either; both saved with the study). They are shown in a 3D preview, each copy
-    laid on its face in a grid, to tick off before the sweep starts.
-- The native solver's crash (above), before a sweep runs hundreds of solves.
+- The native solver's crash (above), now that a sweep runs dozens of solves. None was seen in this
+  session's sweeps (about 100 solves).
 - Open items from M5:
   - A result stays on screen when the interfaces or the load case change after it; the
     summary names the load case it belongs to, but nothing marks it as out of date.

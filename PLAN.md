@@ -45,7 +45,7 @@ this plan say which machine they come from.
 **Headless slicing works, but only with flattened presets** (about 1.4 s for a 20 mm cube):
 
 ```
-bambu-studio.exe --debug 2 --arrange 1 ^
+bambu-studio.exe --debug 2 --arrange 1 --allow-rotations=0 ^
   --load-settings "<dir>\machine.json;<dir>\process.json" ^
   --load-filaments "<dir>\filament.json" ^
   --slice 0 --outputdir <dir> --export-3mf plate.gcode.3mf <dir>\model.stl
@@ -85,7 +85,11 @@ Gotchas, all handled in code:
     (`curr_bed_type: "4"`), and which plate that is could not be confirmed.
 - The exe is a GUI-subsystem binary, so `--help` prints nothing. Diagnose through the exit
   code, `result.json` and `%APPDATA%\BambuStudio\log`.
-- `--arrange 1` only translates: a 30×10×5 box kept its orientation, centred on the bed.
+- `--arrange 1` alone turns a part to the smallest box around its footprint (found in M9: a part
+  spun 45° on the bed came back turned by 31°, and a 30×10×5 box spun 30° was turned straight);
+  axis-aligned parts, as M1 tried, are not turned. `--allow-rotations=0` stops it; `0` as a
+  separate word is taken for a file name. The turn shows in the exported 3mf's build item, which
+  `BambuSlicer.TurnOnPlate` reads: a half turn keeps the box's size and would pass the check below.
   `Placement.FromSlice` rejects any change in bbox size.
 - `BambuStudio.conf` is JSON followed by an `# MD5 checksum` line. The selection is in
   `presets.machine/process/filaments[0]` and the account folder in `app.preset_folder`.
@@ -175,7 +179,8 @@ Getting the frames right once avoids a whole class of bugs later.
   here and never move when the part is reoriented.
 - **Print frame**: part rotated by R, dropped to z = 0 and placed on the bed by the
   slicer. We apply R ourselves by writing a rotated STL, and never use the slicer's
-  auto-orient. M1 checks that `--arrange` only translates, by comparing bbox dimensions.
+  auto-orient. M1 checks that `--arrange` only translates, by comparing bbox dimensions; since
+  M9 the arrange is told not to turn the part, and the 3mf is checked for a turn as well.
 - **Bed → print frame**: translation = `result.json` bbox min − AABB min of our rotated
   mesh.
 - The **FEM is solved in the print frame**, where layers are horizontal and line up with
@@ -1039,6 +1044,25 @@ whatever they lie in.
   interfaces keep their names, kinds and values but lose their faces, which have to be
   picked again.
 
+**A result is saved beside its study** (`ResultFile`, `part.results.zip` next to
+`part.study.json`), by the app whenever it saves the study with a result on screen that is
+one of it, and by `gcodefem results solve`. Opening the study shows the result again, as it
+was solved, without Bambu Studio or the solver (about a second for 100k cells).
+
+- The zip holds the study as it was solved, the model, the material file, the slicer's
+  G-code and report, the exact turn of the slice, and what cannot be worked out again: the
+  last pass's octree leaves, the displacement of each of its nodes, each cell's layer bond and
+  each pass's fields. The cells, the stresses and the failure check are rebuilt from those;
+  cells that come out otherwise than they were solved (another version of the voxelizer)
+  refuse the file. `result.json` also has the safety factor, the weakest cell with its
+  stresses and modes, and the passes, for reading without the program.
+- A saved result counts for the study while the model, the turn, the presets and, in its
+  load case, the mounts, loads and mesh level are the same. Other load cases and the sweep's
+  settings do not count. The material is the one saved, not the library's of now.
+- `gcodefem results show` lists cells of a saved result with their stresses in the frame of
+  their lines and each mode's safety factor: the weakest, ranked by one mode, of one line
+  type, in a box, at a point or along a line. This is what to look into a result with.
+
 **From the model's faces to the cells** (`InterfaceMapper`). The model's surface runs
 through or alongside the outermost cells, which follow it in steps. An interface takes the
 free cell faces that lie within 1.25 line widths of one of its triangles and face the same
@@ -1152,7 +1176,9 @@ material files since M6), and solving several load cases on one matrix.
     then run the full adaptive loop on the best 3. The coarse pass reads the safety factor
     high (M8: 3.35 against 1.58 for the bracket flat, 1.65 against 0.87 on edge). Screening
     ranks the candidates and does not judge them, and M9 checks that the coarse ranking is the
-    final one on the bracket. If it is not, screening takes two passes.
+    final one on the bracket. If it is not, screening takes two passes. (M9: it was not, and
+    two passes were not enough either; screening now refines down to elements of 2³ cells. See
+    below.)
   - Rank by min SF over all load cases, then max deflection, print time and filament (from
     `result.json`), then support volume.
 - **Compare view**: table, side-by-side SF maps, and the weakest spot of each candidate. A
@@ -1164,6 +1190,73 @@ material files since M6), and solving several load cases on one matrix.
   `SolveEstimate`; the slices that make up the screening tell only their time.
 - **Stretch goal**: also compare filaments, and sweep slicer settings (wall loops, infill %
   and pattern) through process overrides.
+
+### What M9 built
+
+- **Faces** (`ConvexHull`, `LayFaces`): the model's convex hull by quickhull, in doubles. Points
+  within a millionth of the part's size of a facet count as on it, so that a flat face meshed
+  finely stays flat. Facets whose normals differ by under 1° make one plane. The contact is the
+  model's triangles within 0.05 mm of the plane and facing its way to within 1°. On the bracket:
+  its two caps (661 mm² each, the holes out), its outer sides (320), its ends (80). The plane
+  across the inner corner touches edges only and is no candidate.
+- **Candidates** (`OrientationCandidates`, `SweepSettings`): the faces with at least the smallest
+  contact, the largest as many as asked, each laid down by `Orientation.LayFlat` from how the part
+  lay when they were listed. The spins of 45° and 90° are added to the angle about Z. Height, and
+  the overhang: what faces down at less than the process's support threshold from the bed
+  (`support_threshold_angle`, 30° in Bambu's presets), what lies on the bed left out. The smallest
+  contact, the count and the spins are saved with the study (`"sweep"`; left out until set).
+- **One pipeline** (`PrintedPart`, `PartSolution`): slicing, reading the toolpath, the cells, and
+  solving one load case are one piece of code. The app's slice and solve, the sweep and the
+  integration tests use it.
+- **The sweep** (`OrientationSweep`): each ticked candidate is sliced and screened in every load
+  case, then the best 3 by that are solved in full, and all are ranked. The ranking is by the
+  lowest safety factor of the load cases to two decimals, then the largest displacement, the print
+  time, the filament and the support volume (from the toolpath's support lines). Without strengths,
+  the highest stress replaces the safety factor. Those solved in full rank first, then those only
+  screened, by their screening; candidates that could not be sliced or solved are noted and the
+  sweep goes on. The sweep stops between steps when cancelled. Each candidate keeps its print and
+  its governing solution, to be opened in the views.
+- **Screening refines down to elements of 2³ cells** (`AdaptiveOptions.FinestLevel`, 1 in the
+  sweep) and leaves out the pass to bead cells, the dearest. `gcodefem sweep --check` solved all
+  six of the bracket's faces in full (both load cases) and compared:
+
+  | Screening | Order by the screening | SF read, × the full solve's | Per candidate |
+  | --- | --- | --- | --- |
+  | coarse pass only (8³) | #1, #2, #3, #4, #6, #5 | 1.34–2.02 | 1.3 s |
+  | 2 passes (to 4³) | #1, #2, #3, #4, #6, #5 | 1.11–1.80 | 1.8 s |
+  | to 2³ cells (3 passes) | #1, #2, #6, #5, #3, #4: the full solves' order | 0.92–1.32 | 3.5 s |
+  | in full | #1, #2, #6, #5, #3, #4: SF 1.58, 1.54, 1.05, 0.96, 0.93, 0.87 | 1 | 12 s |
+
+  The coarse pass put the two upright sides (#3, #4) third and fourth, where the full solve puts
+  them last, and so chose the wrong three to solve in full. Its error depends on how the layers
+  lie against the coarse elements, which is what differs between the candidates. #3 and #5 stay
+  close at 2³ (1.236 against 1.236 screened, 0.93 against 0.96 in full); the best three are clear.
+
+  A study that solves every bead cell (mesh level 0) still screens on the octree, at the level
+  the solver suggests; its full solves keep level 0. A part small enough that the octree solves
+  it directly is screened in full, and that screening counts as its full solve. The best three
+  are chosen by the screening alone.
+- **Progress**: the share done is (candidates done + the current one's share) / their number, with
+  the time per candidate so far, screened and solved in full apart. The slice tells only its time;
+  each load case has its own `SolveEstimate`, which now expects fewer passes when the solve stops
+  at coarser elements. On the bracket, 12 s in: "about 48 s left" of what took 69 s.
+- **App**: a **Compare** tab and an **Orientation sweep** panel.
+  - The panel takes the smallest contact, the count and the spins, says what will be tried and
+    what it costs, and has "Show the faces", "Start the sweep" and "Stop". The sweep does not
+    start until the smallest contact is typed.
+  - The compare view stands a copy of the part on each candidate face, each on its own patch of
+    bed, numbered on the bed in front of it. What touches the bed faces down out of sight, so its
+    rim is drawn in green; the interfaces are tinted and marked as in the model view, and a copy
+    ticked off is dimmed. Once a candidate has a result, its copy shows its cells coloured by safety
+    factor (the governing load case) and an arrow at its weakest spot.
+  - The table under it: a tick per candidate (a click on the copy ticks it too), rank, safety factor
+    of the full solve, the screening's, displacement, print time, filament, support, contact,
+    height, overhang, rotation, state. "Open its result" (or a double click) shows that candidate's
+    print and governing result in the views, and sets the rotation fields and the load case to it.
+  - Every solve by hand joins the table as "by hand n", with the load case it solved; it is not
+    ranked.
+- **CLI**: `gcodefem sweep --study … [--min-contact mm2] [--count n] [--spins] [--save] [--list]
+  [--best 3] [--screen-level 1] [--check]`. Without a smallest contact it lists the faces.
 
 ---
 
@@ -1346,8 +1439,8 @@ Measured on the 40 mm bracket ("Pull sideways"):
   tube budget, and is drawn as lines.
 
 Still to come: line-direction glyphs on the cells (M7 colours them by direction instead),
-cuts other than by layer, the part frame and the Compare tab (M9), and cancelling a running
-solve.
+cuts other than by layer, the part frame, and cancelling a running solve (a sweep can be
+stopped between its steps). The Compare tab came with M9 (§11).
 
 ---
 
@@ -1369,7 +1462,7 @@ that comes early.
 | M7 | **Print-aware material**: line directions, orthotropy, feature classes, bond factor from temps and time gaps | flat vs upright bar shows the TDS XY/Z ratio. **Done 2026-10-23:** every cell keeps its line direction, line type, time, nozzle and fan; the stiffness is orthotropic per cell; the bars' ratio is the sheet's once what the cells alone do is taken out (1.252 for PLA Basic, 1.175 PETG HF, 1.122 ABS), 1.325 as printed; the bond factor is computed and shown, for M8 to use; details in §6. |
 | M8 | **Failure & results**: criteria, SF, governing mode, weakest spot, deformed shape, probe. The refinement marking switches from von Mises to the real failure index. | bracket shows its weakest layer line and failure load. **Done 2026-10-23:** four modes in each cell's line frame (layers, beads, lines, crushing) with Tsai–Wu alongside, Z × the bond factor; the bracket on edge breaks at its layer line 10 mm up at 17.4 N (SF 0.87), flat at 31.7 N; the octree also refines where SF < 4 × the lowest and gets the SF within 1–4 % of the full solve; shown as SF bands, modes, an arrow, the outlined layer line and a probe; details in §8. |
 | M8b | **Results on the print lines**: each bead cut at its cells and coloured by their result, deformed with them, with the toolpath view's layer range, line types and thin lines; a click on a bead probes it (§12) | the bracket's safety factor and failure modes shown on its beads, its weakest wall line found with the sparse infill switched off. **Done 2026-10-24:** each bead cut at the cells its centre line runs through (about 1.1 pieces per cell), coloured, deformed and probed like the cells; on edge with the sparse infill off, the arrow finds the outer wall at layer 51 (SF 0.87, the weakest cell's); flat, the weakest line reads 2 % above the weakest cell, which no line's middle runs through; details in §12. |
-| M9 | **Orientation study**: manual compare + automatic sweep over the faces the part can lie on (convex hull, contact at least the area the user sets, as many as the user sets), shown in a 3D preview to tick off before it starts; coarse screening, refine the best 3, ranking | the bracket's candidate faces previewed, swept, and ranked in a table |
+| M9 | **Orientation study**: manual compare + automatic sweep over the faces the part can lie on (convex hull, contact at least the area the user sets, as many as the user sets), shown in a 3D preview to tick off before it starts; coarse screening, refine the best 3, ranking | the bracket's candidate faces previewed, swept, and ranked in a table. **Done 2026-10-24:** the bracket's six faces (caps, outer sides, ends) previewed side by side, swept in both load cases in about a minute and ranked: flat as modelled first (SF 1.58), flipped (1.54), standing on the far end (1.05); the coarse pass alone ranked them wrong, so screening refines to elements of 2³ cells, which ranks them as all six solved in full; solves by hand join the table; details in §11. |
 | M10 | **Calibrate**: print and break coupons (flat/upright bar, 0°/45° raster, hook) to tune the bond and diagonal factors; CalculiX cross-check | predicted vs measured failure loads recorded in `docs/calibration.md` |
 
 ---

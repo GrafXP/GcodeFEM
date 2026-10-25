@@ -179,6 +179,87 @@ public class BambuIntegrationTests
         Assert.InRange(flat.Failure.SafetyFactorOf(flatPieces.Cells[lowest]) / flat.Failure.SafetyFactor, 1, 1.05); // measured: 1.618 / 1.583
     }
 
+    /// <summary>
+    /// The check of M9: the bracket's faces swept and ranked. It lies on its two caps, its two outer sides and
+    /// its two ends. Screened in both load cases, the caps come first and then the end opposite the tip, as
+    /// solved in full (`gcodefem sweep --check` measured all six in full: 1.58, 1.54, 1.05, 0.96, 0.93, 0.87).
+    /// Lying flat as modelled is best, at M8's safety factor.
+    /// </summary>
+    [BambuFact]
+    public async Task The_bracket_is_swept_over_the_faces_it_can_lie_on_and_ranked()
+    {
+        var study = StudyFile.Load(TestPaths.Sample("bracket40_holes.study.json"));
+        var model = Stl.Read(study.ModelPath);
+        var slicer = new BambuSlicer(BambuInstallation.Locate(), SystemPresets(), BambuSlicer.DefaultCacheDirectory);
+        var candidates = OrientationCandidates.Find(model, Matrix4x4.Identity, new SweepSettings(MinContact: 50));
+        var sweep = new OrientationSweep(study, candidates, OrientationSweep.Slicing(slicer, model, Machine, study.Process!, study.Filament!),
+            MaterialLibrary.Load(TestPaths.Materials), LinearSolvers.Best(), new SweepOptions(Best: 1));
+
+        await sweep.RunAsync();
+
+        Assert.Equal(6, candidates.Count);
+        Assert.All(sweep.Entries, e => Assert.True(e.Screened is { Count: 2 }, e.Error));
+        var byScreening = sweep.Entries.OrderByDescending(e => e.Screened!.Min(o => o.SafetyFactor)).Select(e => e.Candidate).ToList();
+        Assert.Equal([661, 661, 80], byScreening.Take(3).Select(c => MathF.Round(c.Face.ContactArea)));
+        Assert.Equal(Vector3.UnitX, byScreening[2].Face.Normal); // the end of the leg without the tip
+        var best = OrientationSweep.Ranked(sweep.Entries)[0];
+        Assert.Equal((1, Vector3.Zero), (best.Rank, best.Candidate.Rotation));
+        Assert.NotNull(best.Full);
+        Assert.Equal(1.583, best.SafetyFactor, 0.01);
+        Assert.Equal("Pull sideways", best.Governing!.LoadCase);
+    }
+
+    /// <summary>
+    /// A part spun on the bed stays as it was handed over. Bambu Studio's arrange turns a part to the
+    /// smallest box around its footprint unless told not to: a box spun by 30° came back turned straight
+    /// (found on a sweep's candidate spun by 45°, which the slicer then refused to place). Then a sweep of
+    /// the box: so small that every bead cell is an element, its screening is the full solve.
+    /// </summary>
+    [BambuFact]
+    public async Task A_part_spun_on_the_bed_stays_spun_and_a_small_one_is_swept_directly()
+    {
+        var cache = Path.Combine(Path.GetTempPath(), $"gcodefem-test-{Guid.NewGuid():N}");
+        try
+        {
+            var slicer = new BambuSlicer(BambuInstallation.Locate(), SystemPresets(), cache);
+            var box = MeshFactory.Box(Vector3.Zero, new Vector3(30, 10, 5));
+
+            var spun = await slicer.SliceAsync(new SliceRequest(box, Orientation.FromEulerDegrees(0, 0, 30), Machine, Process, Filament));
+
+            Assert.Equal(0, BambuSlicer.TurnOnPlate(Path.Combine(spun.Directory, "plate.gcode.3mf"))!.Value, 2);
+            // The walls lie where the spun box is, half a line inside it: not where a turned one would be.
+            var beads = GcodeParser.Parse(spun.GcodePath).PartBounds()!.Value;
+            var (low, high) = (spun.Placement.BedToPrint(beads.Min) - spun.PrintMesh.Bounds.Min, spun.PrintMesh.Bounds.Max - spun.Placement.BedToPrint(beads.Max));
+            foreach (var inset in new[] { low.X, low.Y, high.X, high.Y }) Assert.InRange(inset, 0.1f, 0.6f);
+
+            // Held at its left end, pushed down at its right.
+            var study = new PartStudy();
+            var held = new PartInterface { Name = "Held", Kind = InterfaceKind.Fixed, Triangles = [10, 11] };
+            var pushed = new PartInterface { Name = "Pushed", Kind = InterfaceKind.Force, Triangles = [6, 7] };
+            study.Interfaces.AddRange([held, pushed]);
+            var down = new StudyLoadCase { Name = "Down" };
+            down.Loads[pushed] = new LoadValue(new Vector3(0, 0, -2));
+            study.LoadCases.Add(down);
+            var candidates = OrientationCandidates.Find(box, Matrix4x4.Identity, new SweepSettings(MinContact: 140));
+            var sweep = new OrientationSweep(study, candidates, OrientationSweep.Slicing(slicer, box, Machine, Process, Filament), MaterialLibrary.Load(TestPaths.Materials), LinearSolvers.Best());
+
+            await sweep.RunAsync();
+
+            Assert.Equal(4, sweep.Entries.Count);
+            Assert.All(sweep.Entries, e =>
+            {
+                Assert.Null(e.Error);
+                Assert.Same(e.Screened, e.Full);
+                Assert.Equal(0, e.Governing!.Result.RootLevel);
+            });
+            Assert.Equal([1, 2, 3, 4], sweep.Entries.Select(e => e.Rank).Order());
+        }
+        finally
+        {
+            if (Directory.Exists(cache)) Directory.Delete(cache, recursive: true);
+        }
+    }
+
     [BambuFact]
     public async Task Slices_a_rotated_part_and_maps_it_back()
     {

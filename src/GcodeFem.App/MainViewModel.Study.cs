@@ -371,18 +371,23 @@ public sealed partial class MainViewModel
     }
 
     /// <summary>A click on the viewport means something: picking or placing on the model, probing a result.</summary>
-    public bool TakesClicks => IsPicking || IsPlacing || View == ViewMode.Results;
+    public bool TakesClicks => IsPicking || IsPlacing || View is ViewMode.Results or ViewMode.Compare;
 
     /// <summary>
     /// A click on the viewport, as a ray in the print frame. While placing, the face it meets is
     /// laid on the bed; while picking, it is added to the selected interface, or taken off if it
-    /// was part of it. On a result it probes the cell it meets.
+    /// was part of it. On a result it probes the cell it meets; on the compare view it ticks off a copy.
     /// </summary>
     public void Pick(Vector3 origin, Vector3 direction)
     {
         if (View == ViewMode.Results)
         {
             Probe(origin, direction);
+            return;
+        }
+        if (View == ViewMode.Compare)
+        {
+            PickCopy(origin, direction);
             return;
         }
         if (View != ViewMode.Model || Part is not { } part) return;
@@ -481,6 +486,7 @@ public sealed partial class MainViewModel
             Process = Process,
             Filament = Filament,
             MeshLevel = Level.Value,
+            Sweep = ReadSweepSettings(out _),
         };
         var items = Interfaces.Select(item => (Item: item, Core: item.ToCore())).ToList();
         study.Interfaces.AddRange(items.Select(pair => pair.Core));
@@ -494,12 +500,83 @@ public sealed partial class MainViewModel
         return study;
     }
 
+    /// <summary>
+    /// Saves the study, and beside it the result on screen if it is one of the study as saved: the load
+    /// case it solved has the same mounts and loads, and the part is laid as it was sliced.
+    /// </summary>
     public void SaveStudy(string path)
     {
         if (Part is null || ModelPath is null) throw new InvalidOperationException("There is no model to save a study of.");
-        StudyFile.Save(ToStudy(), path);
+        var study = ToStudy();
+        StudyFile.Save(study, path);
         StudyPath = path;
-        Status = $"Study saved to {path}.";
+        var results = ResultFile.BesideStudy(path);
+        if (job is not { Solved: { } solved } current)
+        {
+            Status = $"Study saved to {path}." + (File.Exists(results) ? $" {Path.GetFileName(results)} beside it is left as it was." : "");
+            return;
+        }
+        if (ResultFile.Mismatch(solved.Solution.Study, solved.LoadCaseName, study) is { } why)
+        {
+            Status = $"Study saved to {path}, without the result on screen: {why}. Solve it again to save its result.";
+            return;
+        }
+        ResultFile.Save(results, Part, current.Part, solved.Solution, string.IsNullOrEmpty(ResultWarning) ? ResultSummary : $"{ResultSummary}\n{ResultWarning}");
+        Status = $"Study saved to {path}, and the result of '{solved.LoadCaseName}' beside it in {Path.GetFileName(results)}.";
+    }
+
+    /// <summary>Opens a study and its model, and shows the result saved beside it if it is one of this study.</summary>
+    public async Task OpenStudyAsync(string path)
+    {
+        OpenStudy(path);
+        var results = ResultFile.BesideStudy(path);
+        if (Part is not { } part || !File.Exists(results)) return;
+        var opened = Status;
+        ResultHeader header;
+        try
+        {
+            header = ResultFile.ReadHeader(results);
+        }
+        catch (Exception ex) when (IsExpected(ex))
+        {
+            Status = $"{opened} The result beside it cannot be read: {ex.Message}";
+            return;
+        }
+        if (ResultFile.Mismatch(header, ToStudy()) is { } why)
+        {
+            Status = $"{opened} The result saved beside it was not opened: {why}.";
+            return;
+        }
+
+        IsBusy = true;
+        var steps = new StepClock("reading the saved result");
+        BeginWork("Opening the saved result", steps.Now);
+        try
+        {
+            var library = materials;
+            var (print, solved) = await Task.Run(() =>
+            {
+                var saved = ResultFile.Load(results, step => steps.Step = step);
+                steps.Step = "how well the layer lines bonded";
+                return (Job(saved.Part, library), new SolvedJob(saved.Solution));
+            });
+            if (!ReferenceEquals(Part, part)) return; // another model was opened meanwhile
+
+            SelectedLoadCase = LoadCases.FirstOrDefault(c => string.Equals(c.Name.Trim(), solved.LoadCaseName, StringComparison.Ordinal)) ?? SelectedLoadCase;
+            ShowPrint(print);
+            ShowSolution(print, solved);
+            Status = $"Opened {Path.GetFileName(path)} with the result of '{solved.LoadCaseName}' saved {header.SavedAt:yyyy-MM-dd HH:mm}, as it was solved then.";
+        }
+        catch (Exception ex) when (IsExpected(ex))
+        {
+            Status = $"{opened} The result saved beside it could not be opened.";
+            Failed?.Invoke("The saved result could not be opened", ex.Message);
+        }
+        finally
+        {
+            EndWork();
+            IsBusy = false;
+        }
     }
 
     /// <summary>Opens a study and its model. If the model has changed since, the interfaces keep everything but their faces.</summary>
@@ -515,6 +592,8 @@ public sealed partial class MainViewModel
         Process = study.Process ?? Process;
         Filament = study.Filament ?? Filament;
         Level = Levels.FirstOrDefault(level => level.Value == study.MeshLevel) ?? Levels[0];
+        sweepBasis = Rotation;
+        ShowSweepSettings(study.Sweep);
 
         LoadCases.Clear();
         foreach (var loadCase in study.LoadCases) LoadCases.Add(new LoadCaseItem(loadCase.Name));

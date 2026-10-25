@@ -9,8 +9,9 @@ namespace GcodeFem.App;
 ///
 ///   GcodeFem.App model.stl | --study file.study.json
 ///                [--rot x,y,z] [--process name] [--filament name]
-///                [--view model|toolpaths|cells|results] [--level auto|0..5]
-///                [--case name] [--fix xmin|xmax|ymin|ymax|zmin|zmax] [--force x,y,z]
+///                [--view model|toolpaths|cells|results|compare] [--level auto|0..5]
+///                [--min-contact mm2] [--count n] [--spins] [--untick "3,4"] [--sweep] [--row n] [--open n] [--compare]
+///                [--saved] [--case name] [--fix xmin|xmax|ymin|ymax|zmin|zmax] [--force x,y,z]
 ///                [--add fixed|sliding|bolthole|force|pressure|bearing] [--select name] [--name new-name] [--value "0,0,-20"]
 ///                [--lay "x,y"] [--pick-angle degrees] [--click "x,y;x,y"] [--save-study file.study.json]
 ///                [--colour feature|nozzletemperature|fan|speed|time|width|fill|direction|bond|gap|interfaces
@@ -27,6 +28,12 @@ namespace GcodeFem.App;
 /// would, at pixels read off a screenshot of the window; --lay lays the face at such a pixel on the bed first.
 /// --probe clicks on the result at such a pixel, which shows that cell's numbers. --on lines draws the result on the
 /// print lines instead of the cells; --hide and --thin then apply to it as to the toolpath view.
+/// --view compare shows the faces the part can lie on, as --min-contact, --count and --spins choose them; --untick
+/// leaves out rows by number and --click there ticks copies off or on; --sweep runs the sweep, --row selects a row
+/// and --open opens its result in the results view, to which the other options of a view then apply. --compare
+/// ends on the compare view, where a solve by --view results has joined the comparison.
+/// --saved shows the result saved beside the study (part.results.zip, as the app saves it with the study) instead of
+/// slicing and solving; the options of the results view then apply to it.
 /// --materials-window opens the materials window, on the material of that name if one is given, and --import-tds
 /// reads a data sheet into its form (nothing is saved); the screenshot is then of that window.
 /// With --screenshot the app saves the picture and exits; its exit code is 1 if a step failed.

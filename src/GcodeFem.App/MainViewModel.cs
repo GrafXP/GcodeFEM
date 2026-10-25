@@ -145,7 +145,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public partial string Printer { get; set; } = "Looking for Bambu Studio…";
 
     [ObservableProperty]
-    [NotifyCanExecuteChangedFor(nameof(SliceCommand))]
+    [NotifyCanExecuteChangedFor(nameof(SliceCommand), nameof(StartSweepCommand))]
     public partial bool CanSlice { get; set; }
 
     // ---- mesh ----
@@ -166,7 +166,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     // ---- view ----
 
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(IsToolpathView), nameof(IsCellView), nameof(IsResultView), nameof(HasLayers))]
+    [NotifyPropertyChangedFor(nameof(IsToolpathView), nameof(IsCellView), nameof(IsResultView), nameof(IsCompareView), nameof(HasLayers))]
     public partial ViewMode View { get; set; }
 
     public bool IsToolpathView => View == ViewMode.Toolpaths;
@@ -345,6 +345,18 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     public partial LineGeometry3D? MarkLines { get; set; }
 
+    /// <summary>What stands on the bed in the compare view, outlined.</summary>
+    [ObservableProperty]
+    public partial LineGeometry3D? ContactLines { get; set; }
+
+    /// <summary>Text in the scene: the numbers of the compare view's copies.</summary>
+    [ObservableProperty]
+    public partial BillboardText3D? LabelGeometry { get; set; }
+
+    /// <summary>A model is open: there are faces to compare.</summary>
+    [ObservableProperty]
+    public partial bool HasModel { get; set; }
+
     [ObservableProperty]
     public partial LineGeometry3D? BedGrid { get; set; }
 
@@ -355,7 +367,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public partial string Caption { get; set; } = "";
 
     [ObservableProperty]
-    [NotifyCanExecuteChangedFor(nameof(SliceCommand), nameof(SolveCommand))]
+    [NotifyCanExecuteChangedFor(nameof(SliceCommand), nameof(SolveCommand), nameof(StartSweepCommand), nameof(OpenCompareRowCommand))]
     public partial bool IsBusy { get; set; }
 
     partial void OnFilamentChanged(string? value) => RefreshMaterial();
@@ -415,6 +427,13 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     partial void OnViewChanged(ViewMode value)
     {
         if (value != ViewMode.Model) IsPicking = IsPlacing = false; // faces are picked on the model only
+        if (value == ViewMode.Compare && !CompareRows.Any(row => row.CanTick))
+        {
+            // The first look lists the faces as the part lies now.
+            sweepBasis = Rotation;
+            RefreshCandidates();
+            FitCompare();
+        }
         Redraw();
     }
 
@@ -512,6 +531,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         ResultSummary = ResultWarning = ProbeText = "";
         probedCell = -1;
         ResetStudy(); // interfaces are faces of the model that was open
+        ResetComparison();
+        HasModel = true;
         View = ViewMode.Model;
 
         var size = mesh.Bounds.Size;
@@ -538,44 +559,17 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             var library = materials;
             var sliced = await Task.Run(async () =>
             {
-                var slice = await slicer.SliceAsync(request);
-                steps.Step = "reading the toolpath";
-                var toolpath = GcodeParser.Parse(slice.GcodePath);
-                // The slicer's own times per line type include acceleration, which the bond of the layer lines depends on.
-                steps.Step = "turning the toolpath into cells";
-                var clock = PrintClock.Calibrated(toolpath, slice.Report.FeatureSeconds);
-                var grid = Voxelizer.Voxelize(toolpath, slice.Placement, slice.PrintMesh.Bounds, clock);
-                CellIndex[] cells = [.. grid.Occupied(PrintJob.MinFill)];
+                var printed = await PrintedPart.SliceAsync(slicer, request, step => steps.Step = step);
                 steps.Step = "how well the layer lines bonded";
-                return new PrintJob { Slice = slice, Toolpath = toolpath, Clock = clock, Grid = grid, Cells = cells, Bonds = Bonds(grid, cells, toolpath, library) };
+                return Job(printed, library);
             });
 
             if (!ReferenceEquals(Part, part)) return; // another model was opened meanwhile
 
-            job = sliced;
-            HasResult = false;
-            Passes.Clear();
-            ResultSummary = ResultWarning = ProbeText = "";
-            probedCell = -1;
-            LineTypes.Clear();
-            foreach (var entry in ToolpathColours.Colour(sliced.Toolpath, ToolpathColouring.Feature).Legend.Entries)
-            {
-                var item = new LegendItem(entry.Key, entry.Label, entry.Colour);
-                item.PropertyChanged += OnLineTypeChanged;
-                LineTypes.Add(item);
-            }
-
-            LayerCount = sliced.Grid.SizeZ;
-            (LayerLow, LayerHigh) = (1, LayerCount);
-            HasPrint = true;
-            OnPropertyChanged(nameof(LayerText));
-            FitRequested?.Invoke(sliced.Slice.PrintMesh.Bounds);
-            if (View is ViewMode.Model or ViewMode.Results) View = ViewMode.Toolpaths;
-
+            ShowPrint(sliced);
             var report = sliced.Slice.Report;
             Status = $"Sliced in {sliced.Slice.Elapsed.TotalSeconds:0.0} s{(sliced.Slice.FromCache ? " (from the cache)" : "")}: {sliced.Toolpath.Layers.Length} layers, " +
                      $"{sliced.Toolpath.Segments.Length:N0} lines, {report.FilamentGrams:0.0} g, {TimeSpan.FromSeconds(report.PrintSeconds):h\\:mm} h to print; {sliced.Cells.Length:N0} cells.";
-            Redraw();
         }
         catch (Exception ex) when (IsExpected(ex))
         {
@@ -587,6 +581,38 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             EndWork();
             IsBusy = false;
         }
+    }
+
+    /// <summary>A printed part with its cells, and their bond to the layer below as the material library has it.</summary>
+    internal static PrintJob Job(PrintedPart printed, MaterialLibrary library)
+    {
+        CellIndex[] cells = [.. printed.Grid.Occupied(PrintJob.MinFill)];
+        return new PrintJob { Part = printed, Cells = cells, Bonds = Bonds(printed.Grid, cells, printed.Toolpath, library) };
+    }
+
+    /// <summary>Makes <paramref name="sliced"/> the print the views show, without a result yet.</summary>
+    void ShowPrint(PrintJob sliced)
+    {
+        job = sliced;
+        HasResult = false;
+        Passes.Clear();
+        ResultSummary = ResultWarning = ProbeText = "";
+        probedCell = -1;
+        LineTypes.Clear();
+        foreach (var entry in ToolpathColours.Colour(sliced.Toolpath, ToolpathColouring.Feature).Legend.Entries)
+        {
+            var item = new LegendItem(entry.Key, entry.Label, entry.Colour);
+            item.PropertyChanged += OnLineTypeChanged;
+            LineTypes.Add(item);
+        }
+
+        LayerCount = sliced.Grid.SizeZ;
+        (LayerLow, LayerHigh) = (1, LayerCount);
+        HasPrint = true;
+        OnPropertyChanged(nameof(LayerText));
+        FitRequested?.Invoke(sliced.Slice.PrintMesh.Bounds);
+        if (View is ViewMode.Model or ViewMode.Results or ViewMode.Compare) View = ViewMode.Toolpaths;
+        Redraw();
     }
 
     bool CanStartSolve() => HasPrint && !IsBusy;
@@ -606,44 +632,26 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             var chosen = study.LoadCases[LoadCases.IndexOf(shown)];
             // The material of the filament the part was sliced with, which need not be the one selected now.
             var match = materials.Match(current.Toolpath);
-            var material = match.Material.Stiffness();
-            var strength = match.Material.Strength(out var noStrength);
             var options = new AdaptiveOptions(RootLevel: Level.Value, MinFill: PrintJob.MinFill, KeepPassFields: true);
             Passes.Clear();
             var progress = new Progress<AdaptivePass>(pass => Passes.Add(Row(pass)));
 
             var solved = await Task.Run(() =>
             {
-                // The interfaces are faces of the model; the slice says how it was turned for this print.
-                var loadCase = InterfaceMapper.Map(current.Slice.PrintMesh, current.Slice.Placement.Rotation, current.Grid.Pitch, study.Interfaces, chosen);
-                var mesh = FemMesh.Build(current.Grid, PrintJob.MinFill, loadCase);
-                var reach = Assembler.Reach(mesh, loadCase);
-                // The layer lines are as strong as they have bonded: the refinement goes where the part is nearest to breaking.
-                var bonds = new BondModel().Cells(mesh.Grid, mesh.Cells, match.Material.Bonding(current.Toolpath), PrintJob.MinFill);
-                var cells = strength is null ? null : new CellStrength(mesh, strength, bonds.Factor);
                 // The estimate is fed here, on the solving thread, for its clock to read the passes as they end.
-                var result = AdaptiveAnalysis.Run(mesh, material, loadCase, LinearSolvers.Best(), options, pass =>
+                var solution = PartSolution.Solve(current.Part, study, chosen, match, LinearSolvers.Best(), options, pass =>
                 {
                     estimate.Passed(pass);
                     ((IProgress<AdaptivePass>)progress).Report(pass);
-                }, cells, estimate.Solving);
+                }, estimate.Solving);
                 estimate.Finished();
-                return new SolvedJob(result, chosen.Name, reach, match, bonds, cells, noStrength);
+                return new SolvedJob(solution);
             });
 
             if (!ReferenceEquals(job, current)) return; // sliced again or another model opened meanwhile
 
-            current.Solved = solved;
-            current.Surface = null;
-            (probedCell, ProbeText) = (-1, "");
-            Passes.Clear();
-            foreach (var pass in solved.Result.Passes) Passes.Add(Row(pass));
-            Describe(solved);
-            HasResult = true;
-            OnPropertyChanged(nameof(DeformationText));
-            View = ViewMode.Results;
-            Pass = solved.Result.Passes.Count - 1;
-            Redraw();
+            ShowSolution(current, solved);
+            AddSolvedByHand(current, solved);
         }
         catch (Exception ex) when (IsExpected(ex))
         {
@@ -655,6 +663,22 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             EndWork();
             IsBusy = false;
         }
+    }
+
+    /// <summary>Shows <paramref name="solved"/>, a result of <paramref name="current"/>, in the results view.</summary>
+    void ShowSolution(PrintJob current, SolvedJob solved)
+    {
+        current.Solved = solved;
+        current.Surface = null;
+        (probedCell, ProbeText) = (-1, "");
+        Passes.Clear();
+        foreach (var pass in solved.Result.Passes) Passes.Add(Row(pass));
+        Describe(solved);
+        HasResult = true;
+        OnPropertyChanged(nameof(DeformationText));
+        View = ViewMode.Results;
+        Pass = solved.Result.Passes.Count - 1;
+        Redraw();
     }
 
     static PassRow Row(AdaptivePass pass) => new(
@@ -845,7 +869,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         ShowElements,
         CellColouring,
         CurrentMarks(),
-        probedCell);
+        probedCell,
+        View == ViewMode.Compare ? CompareCopies() : [],
+        SelectedCompareRow is { } selected ? CompareRows.IndexOf(selected) : -1);
 
     /// <summary>Brings the viewport up to date. Builds run one at a time, and the last request always wins.</summary>
     void Redraw()
@@ -887,6 +913,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         BedGrid = scene.Bed;
         shownSurface = scene.Surface is { } surface && scene.SurfacePositions is { } positions ? (surface, positions) : null;
         shownLines = scene.Lines;
+        LabelGeometry = scene.Labels;
+        ContactLines = scene.Contact;
         Caption = scene.Caption;
         OnPropertyChanged(nameof(DeformationText));
 

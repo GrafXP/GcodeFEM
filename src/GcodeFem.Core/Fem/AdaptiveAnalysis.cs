@@ -22,6 +22,7 @@ namespace GcodeFem.Core.Fem;
 /// <param name="ConvergedChange">Stop once the peak sits in bead-resolution cells and the last pass moved its failure index (or stress) by less than this fraction.</param>
 /// <param name="MaxDofs">A refinement that would exceed this is not solved; null derives it from free memory.</param>
 /// <param name="KeepPassFields">Keep every pass's element levels, stresses and failure indices per cell, for a viewer to step through; 5 to 9 bytes per cell and pass.</param>
+/// <param name="FinestLevel">Elements are not refined below 2^level cells a side; 0 goes down to bead cells. An orientation sweep screens at 1, which leaves out the last pass, the dearest.</param>
 public sealed record AdaptiveOptions(
     int? RootLevel = null,
     double RefineFactor = 2,
@@ -35,7 +36,8 @@ public sealed record AdaptiveOptions(
     float MinFill = 0.05f,
     double Tolerance = 1e-8,
     int MaxIterations = 50_000,
-    bool KeepPassFields = false);
+    bool KeepPassFields = false,
+    int FinestLevel = 0);
 
 /// <param name="LeavesByLevel">Elements per level, bead cells first.</param>
 /// <param name="MaxVonMises">The highest von Mises stress of any cell.</param>
@@ -76,7 +78,8 @@ public sealed record AdaptivePass(
 /// <summary>A pass of an adaptive solve whose system is built and goes to the solver.</summary>
 /// <param name="Pass">Counted from 0.</param>
 /// <param name="BeadDofs">Unknowns at bead resolution: what no pass can go beyond.</param>
-public readonly record struct AdaptiveSolving(int Pass, int Dofs, int RootLevel, int BeadDofs);
+/// <param name="FinestLevel">The solve stops at elements of 2^level cells (<see cref="AdaptiveOptions.FinestLevel"/>).</param>
+public readonly record struct AdaptiveSolving(int Pass, int Dofs, int RootLevel, int BeadDofs, int FinestLevel = 0);
 
 public sealed class AdaptiveResult
 {
@@ -169,7 +172,7 @@ public static class AdaptiveAnalysis
                 if (system.Fixed[d]) unknowns[d] = 0;
             var buildTime = watch.Elapsed;
 
-            onSolving?.Invoke(new AdaptiveSolving(passes.Count, octree.Dofs, rootLevel, 3 * mesh.NodeCount));
+            onSolving?.Invoke(new AdaptiveSolving(passes.Count, octree.Dofs, rootLevel, 3 * mesh.NodeCount, options.FinestLevel));
             var statistics = solver.Solve(system, unknowns, options.Tolerance, options.MaxIterations);
 
             watch.Restart();
@@ -205,7 +208,7 @@ public static class AdaptiveAnalysis
 
             if (marked.Count == 0)
             {
-                stop = "every hotspot is at bead resolution";
+                stop = options.FinestLevel == 0 ? "every hotspot is at bead resolution" : $"every hotspot is in elements of {1 << options.FinestLevel}^3 cells, as fine as asked for";
                 break;
             }
             if (settled)
@@ -255,7 +258,7 @@ public static class AdaptiveAnalysis
         var marked = new HashSet<int>();
         void Add(int leaf)
         {
-            if (octree.Leaves[leaf].Level > 0) marked.Add(leaf);
+            if (octree.Leaves[leaf].Level > options.FinestLevel) marked.Add(leaf);
         }
 
         for (var e = 0; e < octree.CellLeaf.Length; e++)
@@ -267,7 +270,7 @@ public static class AdaptiveAnalysis
             // Coarse elements are too stiff, and that shifts load between the walls, skins and infill
             // around a hotspot. So the elements that do most of the deforming must not stay coarse.
             var energy = octree.LeafEnergies(nodeDisplacements);
-            var coarse = Enumerable.Range(0, energy.Length).Where(e => octree.Leaves[e].Level > FineLevel).OrderByDescending(e => energy[e]).ToList();
+            var coarse = Enumerable.Range(0, energy.Length).Where(e => octree.Leaves[e].Level > Math.Max(FineLevel, options.FinestLevel)).OrderByDescending(e => energy[e]).ToList();
             var allowed = (1 - options.EnergyFraction) * energy.Sum();
             var held = coarse.Sum(e => energy[e]);
             foreach (var leaf in coarse)

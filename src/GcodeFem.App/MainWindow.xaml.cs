@@ -44,10 +44,10 @@ public partial class MainWindow : Window
         if (dialog.ShowDialog(this) == true) Load(dialog.FileName);
     }
 
-    void OpenStudy_Click(object sender, RoutedEventArgs e)
+    async void OpenStudy_Click(object sender, RoutedEventArgs e)
     {
         var dialog = new OpenFileDialog { Filter = StudyFilter };
-        if (dialog.ShowDialog(this) == true) Try(() => viewModel.OpenStudy(dialog.FileName), "Could not open the study");
+        if (dialog.ShowDialog(this) == true) await TryAsync(() => viewModel.OpenStudyAsync(dialog.FileName), "Could not open the study");
     }
 
     void SaveStudy_Click(object sender, RoutedEventArgs e)
@@ -89,10 +89,29 @@ public partial class MainWindow : Window
         }
         catch (Exception ex) when (MainViewModel.IsExpected(ex))
         {
-            if (options.Screenshot is null) MessageBox.Show(this, ex.Message, title, MessageBoxButton.OK, MessageBoxImage.Warning);
-            else Console.Error.WriteLine($"{title}: {ex.Message}");
+            Report(ex, title);
             return false;
         }
+    }
+
+    async Task<bool> TryAsync(Func<Task> action, string title)
+    {
+        try
+        {
+            await action();
+            return true;
+        }
+        catch (Exception ex) when (MainViewModel.IsExpected(ex))
+        {
+            Report(ex, title);
+            return false;
+        }
+    }
+
+    void Report(Exception ex, string title)
+    {
+        if (options.Screenshot is null) MessageBox.Show(this, ex.Message, title, MessageBoxButton.OK, MessageBoxImage.Warning);
+        else Console.Error.WriteLine($"{title}: {ex.Message}");
     }
 
     // A click that is not the start of a drag picks the face under it. Helix turns the camera with the right button.
@@ -123,7 +142,7 @@ public partial class MainWindow : Window
     {
         var presets = viewModel.LoadPresetsAsync();
         var loaded = options.Text("study") is { } study
-            ? Try(() => viewModel.OpenStudy(study), "Could not open the study")
+            ? await TryAsync(() => viewModel.OpenStudyAsync(study), "Could not open the study")
             : (options.Model ?? FindSample("cube20.stl")) is { } model && Load(model);
         var ok = loaded;
         MaterialsWindow? materials = null;
@@ -138,22 +157,36 @@ public partial class MainWindow : Window
                 ApplyStudy();
 
                 var view = options.Enum<ViewMode>("view") ?? ViewMode.Model;
-                if (view != ViewMode.Model)
+                if (options.Text("level") is { } level and not "auto")
+                    viewModel.Level = viewModel.Levels.First(l => l.Value == int.Parse(level, CultureInfo.InvariantCulture));
+                // A picture of the window while a solve or the sweep runs: the progress bar.
+                var busy = options.Text("busy-screenshot") is { } shot && (view == ViewMode.Results || options.Has("sweep"))
+                    ? ShootLaterAsync(shot, options.Number("busy-after") ?? 2)
+                    : Task.CompletedTask;
+                if (view == ViewMode.Compare) view = await CompareAsync();
+                // The result saved beside the study, as it was opened with it.
+                else if (options.Has("saved"))
                 {
-                    await viewModel.SliceAsync();
-                    ok = viewModel.HasPrint;
-                }
-                if (ok && view == ViewMode.Results)
-                {
-                    if (options.Text("level") is { } level and not "auto")
-                        viewModel.Level = viewModel.Levels.First(l => l.Value == int.Parse(level, CultureInfo.InvariantCulture));
-                    // A picture of the window while the solve runs: the progress bar.
-                    var busy = options.Text("busy-screenshot") is { } shot ? ShootLaterAsync(shot, options.Number("busy-after") ?? 2) : Task.CompletedTask;
-                    await viewModel.SolveAsync();
-                    await busy;
                     ok = viewModel.HasResult;
+                    if (!ok) Console.Error.WriteLine($"No saved result was opened: {viewModel.Status}");
                 }
+                else
+                {
+                    if (view != ViewMode.Model)
+                    {
+                        await viewModel.SliceAsync();
+                        ok = viewModel.HasPrint;
+                    }
+                    if (ok && view == ViewMode.Results)
+                    {
+                        await viewModel.SolveAsync();
+                        ok = viewModel.HasResult;
+                    }
+                }
+                await busy;
                 if (ok) ApplyView(view);
+                // A solve by hand has joined the comparison: --compare ends there.
+                if (ok && options.Has("compare") && view != ViewMode.Compare) viewModel.View = ViewMode.Compare;
                 if (ok && view == ViewMode.Model) await ClickAsync();
                 if (ok && view == ViewMode.Results && options.Text("probe") is { } probe)
                 {
@@ -206,6 +239,38 @@ public partial class MainWindow : Window
         if (options.Text("name") is { } renamed && viewModel.SelectedInterface is { } item) item.Name = renamed;
         if (options.Text("value") is { } value && viewModel.SelectedInterface is { } valued) valued.ValueText = value;
         if (options.Number("pick-angle") is { } angle) viewModel.PickAngle = angle;
+    }
+
+    /// <summary>
+    /// The compare view from the command line: the sweep's settings, the faces, ticks taken off by
+    /// number (--untick "3,4") or by clicks on the copies, the sweep, and a row selected or opened.
+    /// Returns the view to end on: the results, if a row was opened.
+    /// </summary>
+    async Task<ViewMode> CompareAsync()
+    {
+        if (options.Text("min-contact") is { } least) viewModel.MinContactText = least;
+        if (options.Text("count") is { } count) viewModel.CountText = count;
+        if (options.Has("spins")) viewModel.Spins = true;
+        viewModel.PreviewFaces();
+        CompareRow Row(double number) => viewModel.CompareRows.ElementAtOrDefault((int)number - 1) ?? throw new KeyNotFoundException($"There is no row {number} in the comparison.");
+        foreach (var number in (options.Text("untick") ?? "").Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+            Row(double.Parse(number, CultureInfo.InvariantCulture)).IsTicked = false;
+        if (options.Text("click") is { } clicks)
+        {
+            await CameraReady();
+            foreach (var click in clicks.Split(';', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)) PickAt(InViewport(click, "click"));
+        }
+        if (options.Has("sweep")) await viewModel.StartSweepAsync();
+        if (options.Number("row") is { } selected) viewModel.SelectedCompareRow = Row(selected);
+        if (options.Number("open") is not { } opened) return ViewMode.Compare;
+        viewModel.SelectedCompareRow = Row(opened);
+        viewModel.OpenCompareRow();
+        return viewModel.HasResult ? ViewMode.Results : ViewMode.Compare;
+    }
+
+    void CompareRow_DoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (viewModel.OpenCompareRowCommand.CanExecute(null)) viewModel.OpenCompareRowCommand.Execute(null);
     }
 
     /// <summary>

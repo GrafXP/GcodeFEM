@@ -40,4 +40,30 @@ public class PlacementTests
 
         Assert.Throws<SlicerException>(() => Placement.FromSlice(Matrix4x4.Identity, print, turned));
     }
+
+    /// <summary>
+    /// The turn Bambu Studio gave the part on the plate, from the 3mf it exports. The first matrix is
+    /// what its arrange did to a part spun 45° on the bed (31.07° about Z) before it was told not to.
+    /// </summary>
+    [Theory]
+    [InlineData("0.856576323 0.516020351 0 -0.516020351 0.856576323 0 0 0 1 104.36221 118.3071 0", 31.07)]
+    [InlineData("1 0 0 0 1 0 0 0 1 103.301 138.62381 0", 0)]
+    [InlineData("-1 0 0 0 -1 0 0 0 1 128 128 0", 180)]
+    public void The_turn_on_the_plate_is_read_from_the_3mf(string transform, double degrees)
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"gcodefem-plate-{Guid.NewGuid():N}.3mf");
+        try
+        {
+            using (var archive = System.IO.Compression.ZipFile.Open(path, System.IO.Compression.ZipArchiveMode.Create))
+            using (var writer = new StreamWriter(archive.CreateEntry("3D/3dmodel.model").Open()))
+                writer.Write($"""<model><build><item objectid="2" p:UUID="0" transform="{transform}" printable="1"/></build></model>""");
+
+            Assert.Equal(degrees, BambuSlicer.TurnOnPlate(path)!.Value, 1);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+        Assert.Null(BambuSlicer.TurnOnPlate(path));
+    }
 }

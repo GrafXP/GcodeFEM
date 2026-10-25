@@ -21,6 +21,14 @@ public sealed class GlyphMesh
     public IReadOnlyList<Vector4> Colours => colours;
     public int TriangleCount => positions.Count / 3;
 
+    /// <summary>The shapes of <paramref name="other"/>, moved by <paramref name="shift"/>.</summary>
+    public void Append(GlyphMesh other, Vector3 shift)
+    {
+        positions.AddRange(other.positions.Select(p => p + shift));
+        normals.AddRange(other.normals);
+        colours.AddRange(other.colours);
+    }
+
     /// <summary>A cone with its point at <paramref name="tip"/> and its round end at <paramref name="foot"/>.</summary>
     public void AddCone(Vector3 tip, Vector3 foot, float radius, Vector4 colour)
     {

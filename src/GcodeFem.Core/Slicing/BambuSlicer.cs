@@ -1,7 +1,10 @@
 using System.Diagnostics;
+using System.Globalization;
+using System.IO.Compression;
 using System.Numerics;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Text.Json.Nodes;
 using GcodeFem.Core.Geometry;
 
@@ -32,6 +35,7 @@ public sealed class BambuSlicer(BambuInstallation bambu, PresetLibrary presets, 
     const string GcodeFile = "plate_1.gcode";
     const string ResultFile = "result.json";
     const string CompleteMarker = "complete";
+    const string PlateFile = "plate.gcode.3mf";
 
     public static string DefaultCacheDirectory { get; } = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "GcodeFem", "cache", "slices");
@@ -69,6 +73,14 @@ public sealed class BambuSlicer(BambuInstallation bambu, PresetLibrary presets, 
         if (!File.Exists(gcode))
             throw new SlicerException($"Bambu Studio reported success but wrote no {GcodeFile} in '{directory}'.");
 
+        // The plate's own record of the part: a half turn keeps the size of its box, which the placement checks.
+        if (TurnOnPlate(Path.Combine(directory, PlateFile)) is { } turn && turn > 0.01f)
+        {
+            // Sliced before the arrange was told not to turn parts.
+            if (fromCache) return await SliceAsync(request, useCache: false, cancellationToken);
+            throw new SlicerException($"Bambu Studio turned the part on the plate by {turn:0.#} deg, which would break every mapping back to the model.");
+        }
+
         var placement = Placement.FromSlice(request.Rotation, printMesh.Bounds, report.ObjectBounds);
         if (!fromCache) await File.WriteAllTextAsync(Path.Combine(directory, CompleteMarker), DateTime.UtcNow.ToString("O"), cancellationToken);
 
@@ -97,6 +109,25 @@ public sealed class BambuSlicer(BambuInstallation bambu, PresetLibrary presets, 
         return null;
     }
 
+    /// <summary>
+    /// How far Bambu Studio turned the part on the plate (degrees, about whatever axis), from the
+    /// placement of the part in the 3mf it exports beside the G-code; null if there is no such file.
+    /// result.json's box cannot tell: after a turn it gives the box of the part's turned box.
+    /// </summary>
+    public static float? TurnOnPlate(string threeMf)
+    {
+        if (!File.Exists(threeMf)) return null;
+        using var archive = ZipFile.OpenRead(threeMf);
+        if (archive.GetEntry("3D/3dmodel.model") is not { } entry) return null;
+        using var reader = new StreamReader(entry.Open());
+        // The build item: a 3 × 3 turn, row by row, then where it goes.
+        if (Regex.Match(reader.ReadToEnd(), @"<item\b[^>]*\btransform=""([^""]+)""") is not { Success: true } item) return 0;
+        var m = item.Groups[1].Value.Split(' ', StringSplitOptions.RemoveEmptyEntries).Select(v => double.Parse(v, CultureInfo.InvariantCulture)).ToArray();
+        if (m.Length != 12) throw new SlicerException($"Bambu Studio's 3mf places the part by '{item.Groups[1].Value}', which is not a 3D transform.");
+        var trace = m[0] + m[4] + m[8];
+        return (float)(Math.Acos(Math.Clamp((trace - 1) / 2, -1, 1)) * 180 / Math.PI);
+    }
+
     async Task RunAsync(string directory, string? plate, CancellationToken cancellationToken)
     {
         var start = DateTime.UtcNow;
@@ -109,13 +140,14 @@ public sealed class BambuSlicer(BambuInstallation bambu, PresetLibrary presets, 
         string[] arguments =
         [
             "--debug", "2",
-            "--arrange", "1",
+            // Placed on the plate, but not turned: the arrange turns a part to the smallest box around its footprint unless told not to.
+            "--arrange", "1", "--allow-rotations=0",
             .. plate is null ? [] : new[] { "--curr-bed-type", plate },
             "--load-settings", $"{Path.Combine(directory, "machine.json")};{Path.Combine(directory, "process.json")}",
             "--load-filaments", Path.Combine(directory, "filament.json"),
             "--slice", "0",
             "--outputdir", directory,
-            "--export-3mf", "plate.gcode.3mf",
+            "--export-3mf", PlateFile,
             Path.Combine(directory, ModelFile),
         ];
         foreach (var argument in arguments) info.ArgumentList.Add(argument);

@@ -18,6 +18,8 @@ try
         "solve" when commandLine.Positional.Count == 1 || commandLine.Flag("study") => await FemCommands.Solve(commandLine),
         "adapt" when commandLine.Positional.Count == 1 || commandLine.Flag("study") => await AdaptCommands.Adapt(commandLine),
         "study" when commandLine.Positional.Count >= 2 => StudyCommands.Run(commandLine),
+        "sweep" => await SweepCommands.Sweep(commandLine),
+        "results" when commandLine.Positional.Count == 2 => await ResultCommands.Run(commandLine),
         "material" when commandLine.Positional.Count >= 1 => MaterialCommands.Run(commandLine),
         "bars" => await FemCommands.Bars(commandLine),
         "bench" => commandLine.Flag("adaptive") ? AdaptCommands.Bench(commandLine) : FemCommands.Bench(commandLine),
@@ -49,6 +51,10 @@ static int Usage()
           gcodefem study add <study.json> --name <name> [--kind fixed|sliding|bolthole|force|pressure|bearing] [--at "x,y,z;x,y,z"]
                              [--angle 20] [--free-along] [--case <name>] [--force x,y,z | --normal-force n | --pressure p]
           gcodefem study show <study.json>
+          gcodefem sweep --study <study.json> [--min-contact mm2] [--count n] [--spins] [--save] [--list] [--best 3] [--screen-level 1] [--check]
+          gcodefem results solve <study.json> [--case <name>] [--level auto|0..5] [--out <file.results.zip>]
+          gcodefem results show <file.results.zip | study.json> [--top 10] [--by governing|layers|beads|lines|crushed|tsaiwu|vonmises]
+                                [--feature "outer wall"] [--box "x,y,z;x,y,z"] [--cell n] [--at x,y,z] [--along "x,y,z;x,y,z" --steps 20]
           gcodefem material list [--machine <name>] [--all]
           gcodefem material show <name>
           gcodefem material import <tds.pdf> [--name <name>] [--type <type>] [--filaments "a;b"] [--stand-in] [--url <where from>]
@@ -92,6 +98,19 @@ static int Usage()
         solve works at full bead resolution. adapt solves on an octree that is only fine where the part is nearest
         to breaking; --reference also runs the full solve and compares, --sweep does that for several option sets
         (';' between sets, refined by stress).
+        sweep tries the faces the part can be laid on (planes of its convex hull that it touches with at least
+        --min-contact mm2, the largest --count of them; --spins also spins each by 45 and 90 deg on the bed). Each is
+        sliced and screened in every load case, refined down to elements of 2^--screen-level cells only, the --best are
+        solved in full, and all are ranked
+        by the lowest safety factor, then the largest displacement, print time, filament and support. Without a smallest
+        contact (here or saved with the study by --save) it only lists the faces. --check solves every candidate in
+        full and says whether the screening ranked them in the same order.
+        A result is saved beside its study as <name>.results.zip, by the app when it saves the study and by results solve,
+        which slices and solves one load case as the app does. The zip holds the study as it was solved, the model, the
+        material, the G-code and the solution, so the app shows the result again when it opens the study, without
+        slicing or solving. results show rebuilds it and lists cells with their stresses in the frame of their lines and
+        each mode's safety factor: by default the --top 10 weakest, ranked --by the mode that governs or by one mode,
+        of one --feature (line type) or inside a --box (print frame); --cell, --at and --along pick cells directly.
         bars slices a bar lying flat and standing up and pulls each along its length: their stiffnesses should stand
         as the material's along the lines to across the layers, and they break along the lines and across the layers.
         bench solves solid cantilevers of 800 x scale^3 bead cells and compares the tip with beam theory;
